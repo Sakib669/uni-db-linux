@@ -1,0 +1,18 @@
+[package]
+name = "unidb"
+version = "4.1.0"
+edition = "2021"
+description = "UniDB - Unified Database Studio for Linux (Postgres, MySQL, MariaDB, Cockroach, Cassandra, Redis, MongoDB, MSSQL, SQLite)"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+aes-gcm = "0.10"
+# Drivers are feature-gated in production; this repo ships the stable core.
+# postgres, mysql, redis, mongo, sqlite drivers are enabled via src/db/*
+
+[[bin]]
+name = "unidb"
+path = "src/main.rs"
