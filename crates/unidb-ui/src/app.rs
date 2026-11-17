@@ -13,8 +13,8 @@ use sourceview5::prelude::*;
 use uuid::Uuid;
 
 use unidb_app::{
-    AppService, AuditEntry, CheckStatus, HistoryEntry, ImportOptions, ImportReport, SavedQuery,
-    SecurityReport,
+    AppService, AuditEntry, CheckStatus, HistoryEntry, ImportOptions, ImportReport, ReleaseInfo,
+    SavedQuery, SecurityReport,
 };
 use unidb_core::{
     ColumnDesign, ConnectionProfile, Engine, SqlDialect, SslMode, TableColumnInfo, TableDesign,
@@ -143,6 +143,9 @@ struct AppModel {
     saved_rows: Vec<gtk::ListBoxRow>,
     settings_combo: adw::ComboRow,
     settings_loaded: bool,
+    update_button: gtk::Button,
+    update_status: gtk::Label,
+    update_feed: Option<String>,
 }
 
 enum AppMsg {
@@ -216,6 +219,9 @@ enum AppMsg {
     HistoryFailed(String),
     SettingsLoaded(Option<String>),
     SetColorScheme(u32),
+    CheckUpdates,
+    UpdateResult(Option<Box<ReleaseInfo>>),
+    UpdateFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -291,6 +297,9 @@ impl std::fmt::Debug for AppMsg {
             Self::HistoryFailed(_) => "HistoryFailed",
             Self::SettingsLoaded(_) => "SettingsLoaded",
             Self::SetColorScheme(_) => "SetColorScheme",
+            Self::CheckUpdates => "CheckUpdates",
+            Self::UpdateResult(_) => "UpdateResult",
+            Self::UpdateFailed(_) => "UpdateFailed",
         })
     }
 }
@@ -355,6 +364,8 @@ struct ShellWidgets {
     saved_list: gtk::ListBox,
     saved_name_entry: gtk::Entry,
     settings_combo: adw::ComboRow,
+    update_button: gtk::Button,
+    update_status: gtk::Label,
 }
 
 #[relm4::component]
@@ -480,6 +491,9 @@ impl SimpleComponent for AppModel {
             saved_rows: Vec::new(),
             settings_combo: widgets.settings_combo,
             settings_loaded: false,
+            update_button: widgets.update_button,
+            update_status: widgets.update_status,
+            update_feed: std::env::var("UNIDB_UPDATE_FEED").ok(),
         };
 
         if let Some(error) = &model.error {
@@ -1301,6 +1315,54 @@ impl SimpleComponent for AppModel {
                         )));
                     }
                 });
+            }
+            AppMsg::CheckUpdates => {
+                let Some(feed) = self.update_feed.clone() else {
+                    self.show_toast("Set UNIDB_UPDATE_FEED to enable the update check.");
+                    return;
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.update_status.set_label("Checking...");
+                self.update_button.set_sensitive(false);
+                self.handle.spawn(async move {
+                    match service.check_updates(&feed).await {
+                        Ok(Some(release)) => {
+                            sender.input(AppMsg::UpdateResult(Some(Box::new(release))));
+                        }
+                        Ok(None) => sender.input(AppMsg::UpdateResult(None)),
+                        Err(error) => sender.input(AppMsg::UpdateFailed(format!(
+                            "Update check failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::UpdateResult(release) => match release {
+                Some(release) => {
+                    let text = format!(
+                        "UniDB {} is available: {}",
+                        release.version,
+                        release.url.as_deref().unwrap_or("the release page")
+                    );
+                    self.update_status.set_label(&text);
+                    self.update_button.set_sensitive(true);
+                    self.show_toast(&text);
+                }
+                None => {
+                    let text = format!("UniDB {} is up to date.", env!("CARGO_PKG_VERSION"));
+                    self.update_status.set_label(&text);
+                    self.update_button.set_sensitive(true);
+                    self.show_toast(&text);
+                }
+            },
+            AppMsg::UpdateFailed(message) => {
+                self.update_status.set_label(&message);
+                self.update_button.set_sensitive(true);
+                self.show_toast(&message);
             }
             AppMsg::ExportReady(connection_id, format, path, sql) => {
                 let Some(service) = &self.service else {
@@ -2364,6 +2426,10 @@ fn tls_from_index(index: u32) -> SslMode {
     }
 }
 
+fn sender_has_update_feed() -> bool {
+    std::env::var("UNIDB_UPDATE_FEED").is_ok()
+}
+
 fn drain_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
     let mut rows = Vec::new();
     let mut child = list.first_child();
@@ -3052,8 +3118,36 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         )
         .build();
     about_group.add(&engine_row);
+    let updates_group = adw::PreferencesGroup::builder().title("Updates").build();
+    let update_row = adw::ActionRow::builder()
+        .title("Check for updates")
+        .subtitle(if sender_has_update_feed() {
+            "Asks the release feed whether a newer version exists"
+        } else {
+            "Set UNIDB_UPDATE_FEED to enable the check"
+        })
+        .build();
+    let update_button = gtk::Button::with_label("Check");
+    update_button.set_valign(gtk::Align::Center);
+    update_button.set_sensitive(sender_has_update_feed());
+    {
+        let sender = sender.clone();
+        update_button.connect_clicked(move |_| sender.input(AppMsg::CheckUpdates));
+    }
+    update_row.add_suffix(&update_button);
+    updates_group.add(&update_row);
+    let update_status = gtk::Label::builder()
+        .label(format!("Running version {}", env!("CARGO_PKG_VERSION")))
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    update_status.add_css_class("unidb-muted");
+    let update_status_row = adw::ActionRow::new();
+    update_status_row.set_child(Some(&update_status));
+    updates_group.add(&update_status_row);
     let settings_page = adw::PreferencesPage::new();
     settings_page.add(&appearance_group);
+    settings_page.add(&updates_group);
     settings_page.add(&about_group);
     let settings_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -3222,6 +3316,8 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         saved_list,
         saved_name_entry,
         settings_combo,
+        update_button,
+        update_status,
     }
 }
 
