@@ -3,7 +3,9 @@
 //! live store state, and a startup diagnostic page. The dynamic parts are built
 //! in Rust.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use relm4::adw::prelude::*;
@@ -17,8 +19,9 @@ use unidb_app::{
     SavedQuery, SecurityReport,
 };
 use unidb_core::{
-    ColumnDesign, ConnectionProfile, Engine, SqlDialect, SslMode, TableColumnInfo, TableDesign,
-    TransferFormat, alter_table_sql, create_table_sql,
+    ChartPoint, ColumnDesign, ConnectionProfile, Engine, QueryResult, QueryResult as ResultSet,
+    SqlDialect, SslMode, TableColumnInfo, TableDesign, TransferFormat, alter_table_sql,
+    chart_series, create_table_sql, explain_statement,
 };
 
 const ABOUT_NAME: &str = "UniDB";
@@ -106,6 +109,14 @@ struct AppModel {
     run_button: gtk::Button,
     cancel_button: gtk::Button,
     clear_button: gtk::Button,
+    explain_button: gtk::Button,
+    chart_button: gtk::Button,
+    editor_results_stack: gtk::Stack,
+    chart_area: gtk::DrawingArea,
+    plan_revealer: gtk::Revealer,
+    plan_buffer: sourceview5::Buffer,
+    editor_last_result: Option<QueryResult>,
+    chart_data: Rc<RefCell<Vec<ChartPoint>>>,
     designer_stack: gtk::Stack,
     designer_conn_dropdown: gtk::DropDown,
     designer_table_dropdown: gtk::DropDown,
@@ -185,6 +196,10 @@ enum AppMsg {
     RunQuery,
     CancelQuery,
     QueryFinished(Box<unidb_core::QueryResult>),
+    ExplainQuery,
+    ExplainFinished(Box<unidb_core::QueryResult>),
+    ExplainFailed(String),
+    ToggleChart,
     QueryFailed(String),
     ClearResults,
     DesignerConnectionSelected(u32),
@@ -263,6 +278,10 @@ impl std::fmt::Debug for AppMsg {
             Self::RunQuery => "RunQuery",
             Self::CancelQuery => "CancelQuery",
             Self::QueryFinished(_) => "QueryFinished",
+            Self::ExplainQuery => "ExplainQuery",
+            Self::ExplainFinished(_) => "ExplainFinished",
+            Self::ExplainFailed(_) => "ExplainFailed",
+            Self::ToggleChart => "ToggleChart",
             Self::QueryFailed(_) => "QueryFailed",
             Self::ClearResults => "ClearResults",
             Self::DesignerConnectionSelected(_) => "DesignerConnectionSelected",
@@ -344,6 +363,13 @@ struct ShellWidgets {
     run_button: gtk::Button,
     cancel_button: gtk::Button,
     clear_button: gtk::Button,
+    explain_button: gtk::Button,
+    chart_button: gtk::Button,
+    editor_results_stack: gtk::Stack,
+    chart_area: gtk::DrawingArea,
+    plan_revealer: gtk::Revealer,
+    plan_buffer: sourceview5::Buffer,
+    chart_data: Rc<RefCell<Vec<ChartPoint>>>,
     designer_stack: gtk::Stack,
     designer_conn_dropdown: gtk::DropDown,
     designer_table_dropdown: gtk::DropDown,
@@ -454,6 +480,14 @@ impl SimpleComponent for AppModel {
             run_button: widgets.run_button,
             cancel_button: widgets.cancel_button,
             clear_button: widgets.clear_button,
+            explain_button: widgets.explain_button,
+            chart_button: widgets.chart_button,
+            editor_results_stack: widgets.editor_results_stack,
+            chart_area: widgets.chart_area,
+            plan_revealer: widgets.plan_revealer,
+            plan_buffer: widgets.plan_buffer,
+            editor_last_result: None,
+            chart_data: widgets.chart_data,
             designer_stack: widgets.designer_stack,
             designer_conn_dropdown: widgets.designer_conn_dropdown,
             designer_table_dropdown: widgets.designer_table_dropdown,
@@ -865,8 +899,84 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::QueryFinished(result) => {
                 self.editor_busy = false;
+                self.editor_last_result = Some((*result).clone());
+                self.chart_data.borrow_mut().clear();
+                self.editor_results_stack.set_visible_child_name("grid");
+                self.chart_button.set_label("Chart");
                 self.update_controls();
                 self.render_result(&result);
+            }
+            AppMsg::ExplainQuery => {
+                let Some(connection_id) = self.editor_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let engine = self
+                    .connections
+                    .iter()
+                    .find(|profile| profile.id == connection_id)
+                    .map(|profile| profile.engine);
+                let Some(engine) = engine else {
+                    return;
+                };
+                let buffer = self.editor_view.buffer();
+                let sql = buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .to_string();
+                let statement = match explain_statement(engine, &sql) {
+                    Ok(statement) => statement,
+                    Err(error) => {
+                        self.show_toast(error.user_message());
+                        return;
+                    }
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.editor_status.set_label("Explaining...");
+                self.handle.spawn(async move {
+                    match service.execute(connection_id, &statement).await {
+                        Ok(result) => sender.input(AppMsg::ExplainFinished(Box::new(result))),
+                        Err(error) => sender.input(AppMsg::ExplainFailed(format!(
+                            "Explain failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::ExplainFinished(result) => {
+                let plan = format_plan(&result);
+                self.plan_buffer.set_text(&plan);
+                self.plan_revealer.set_reveal_child(true);
+                self.editor_status.set_label("Plan ready.");
+            }
+            AppMsg::ExplainFailed(message) => {
+                self.editor_status.set_label(&message);
+                self.show_toast(&message);
+            }
+            AppMsg::ToggleChart => {
+                let showing_chart =
+                    self.editor_results_stack.visible_child_name().as_deref() == Some("chart");
+                if showing_chart {
+                    self.editor_results_stack.set_visible_child_name("grid");
+                    self.chart_button.set_label("Chart");
+                    return;
+                }
+                let series = self
+                    .editor_last_result
+                    .as_ref()
+                    .map(|result| chart_series(&result.columns, &result.rows, 50))
+                    .unwrap_or_default();
+                if series.is_empty() {
+                    self.show_toast("The result has no numeric column to chart.");
+                    return;
+                }
+                *self.chart_data.borrow_mut() = series;
+                self.chart_area.queue_draw();
+                self.editor_results_stack.set_visible_child_name("chart");
+                self.chart_button.set_label("Table");
             }
             AppMsg::QueryFailed(message) => {
                 self.editor_busy = false;
@@ -877,8 +987,15 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::ClearResults => {
                 self.clear_grid();
+                self.editor_last_result = None;
+                self.chart_data.borrow_mut().clear();
+                self.editor_results_stack.set_visible_child_name("grid");
+                self.chart_button.set_label("Chart");
+                self.plan_revealer.set_reveal_child(false);
+                self.plan_buffer.set_text("");
                 self.editor_status.set_label("Ready.");
                 self.editor_error.set_visible(false);
+                self.update_controls();
             }
             AppMsg::DesignerConnectionSelected(index) => {
                 if let Some(id) = self.designer_ids.get(index as usize).copied() {
@@ -1432,6 +1549,10 @@ impl AppModel {
         self.run_button.set_sensitive(ready && !self.editor_busy);
         self.cancel_button.set_sensitive(ready && self.editor_busy);
         self.clear_button.set_sensitive(true);
+        self.explain_button
+            .set_sensitive(ready && !self.editor_busy);
+        self.chart_button
+            .set_sensitive(self.editor_last_result.is_some());
     }
 
     fn load_connections(&self, sender: &ComponentSender<Self>) {
@@ -2394,6 +2515,88 @@ impl AppModel {
     }
 }
 
+fn format_plan(result: &ResultSet) -> String {
+    if result.columns.is_empty() {
+        return "No plan rows returned.".to_string();
+    }
+    let mut lines = Vec::new();
+    for row in &result.rows {
+        if row.len() == 1 {
+            let text = unidb_app::value_text(&row[0]);
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text)
+                && (parsed.is_object() || parsed.is_array())
+            {
+                lines.push(serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| text.clone()));
+                continue;
+            }
+        }
+        lines.push(
+            row.iter()
+                .map(unidb_app::value_text)
+                .collect::<Vec<String>>()
+                .join(" | "),
+        );
+    }
+    if lines.is_empty() {
+        "No plan rows returned.".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn draw_chart(
+    _area: &gtk::DrawingArea,
+    context: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    points: &[ChartPoint],
+) {
+    let width = f64::from(width);
+    let height = f64::from(height);
+    let dark = adw::StyleManager::default().is_dark();
+    let text = if dark {
+        (0.9, 0.9, 0.9)
+    } else {
+        (0.15, 0.15, 0.15)
+    };
+    let teal = (0.05, 0.58, 0.53);
+    let margin_left = 130.0;
+    let margin_right = 70.0;
+    let top = 10.0;
+    let bottom = 10.0;
+    if points.is_empty() {
+        return;
+    }
+    let plot_width = (width - margin_left - margin_right).max(10.0);
+    let row_height = ((height - top - bottom) / points.len() as f64).max(6.0);
+    let bar_height = (row_height - 4.0).max(3.0);
+    let max_value = points
+        .iter()
+        .map(|point| point.value.abs())
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    context.select_font_face(
+        "Sans",
+        gtk::cairo::FontSlant::Normal,
+        gtk::cairo::FontWeight::Normal,
+    );
+    context.set_font_size(11.0);
+    for (index, point) in points.iter().enumerate() {
+        let y = top + row_height * index as f64;
+        let label: String = point.label.chars().take(16).collect();
+        context.set_source_rgb(text.0, text.1, text.2);
+        context.move_to(4.0, y + bar_height * 0.8);
+        let _ = context.show_text(&label);
+        let bar_width = (point.value.abs() / max_value) * plot_width;
+        context.set_source_rgb(teal.0, teal.1, teal.2);
+        context.rectangle(margin_left, y + 2.0, bar_width.max(1.0), bar_height);
+        let _ = context.fill();
+        context.set_source_rgb(text.0, text.1, text.2);
+        context.move_to(margin_left + bar_width + 6.0, y + bar_height * 0.8);
+        let _ = context.show_text(&format!("{:.2}", point.value));
+    }
+}
+
 fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
@@ -2861,6 +3064,43 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         .vexpand(true)
         .child(&editor_grid)
         .build();
+    let chart_data: Rc<RefCell<Vec<ChartPoint>>> = Rc::new(RefCell::new(Vec::new()));
+    let chart_area = gtk::DrawingArea::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .height_request(240)
+        .build();
+    {
+        let data = Rc::clone(&chart_data);
+        chart_area.set_draw_func(move |area, context, width, height| {
+            draw_chart(area, context, width, height, &data.borrow());
+        });
+    }
+    let editor_results_stack = gtk::Stack::new();
+    editor_results_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    editor_results_stack.set_vexpand(true);
+    editor_results_stack.add_named(&editor_grid_scroll, Some("grid"));
+    editor_results_stack.add_named(&chart_area, Some("chart"));
+    editor_results_stack.set_visible_child_name("grid");
+    let plan_buffer = sourceview5::Buffer::new(None::<&gtk::TextTagTable>);
+    plan_buffer.set_highlight_syntax(false);
+    let plan_view = sourceview5::View::with_buffer(&plan_buffer);
+    plan_view.set_monospace(true);
+    plan_view.set_editable(false);
+    plan_view.set_cursor_visible(false);
+    plan_view.set_top_margin(6);
+    plan_view.set_bottom_margin(6);
+    plan_view.set_left_margin(6);
+    let plan_scroll = gtk::ScrolledWindow::builder()
+        .height_request(180)
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&plan_view)
+        .build();
+    let plan_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .reveal_child(false)
+        .child(&plan_scroll)
+        .build();
     let results_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     results_box.set_margin_top(8);
     results_box.set_margin_bottom(8);
@@ -2868,7 +3108,8 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     results_box.set_margin_end(12);
     results_box.append(&editor_status);
     results_box.append(&editor_error);
-    results_box.append(&editor_grid_scroll);
+    results_box.append(&editor_results_stack);
+    results_box.append(&plan_revealer);
     let results_scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
         .child(&results_box)
@@ -2951,6 +3192,18 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         let sender = sender.clone();
         clear_button.connect_clicked(move |_| sender.input(AppMsg::ClearResults));
     }
+    let explain_button = gtk::Button::with_label("Explain");
+    explain_button.set_tooltip_text(Some("Run the engine explain statement for the editor SQL"));
+    {
+        let sender = sender.clone();
+        explain_button.connect_clicked(move |_| sender.input(AppMsg::ExplainQuery));
+    }
+    let chart_button = gtk::Button::with_label("Chart");
+    chart_button.set_sensitive(false);
+    {
+        let sender = sender.clone();
+        chart_button.connect_clicked(move |_| sender.input(AppMsg::ToggleChart));
+    }
     let export_csv_button = gtk::Button::with_label("Export CSV");
     {
         let sender = sender.clone();
@@ -2969,6 +3222,8 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     editor_toolbar.append(&run_button);
     editor_toolbar.append(&cancel_button);
     editor_toolbar.append(&clear_button);
+    editor_toolbar.append(&explain_button);
+    editor_toolbar.append(&chart_button);
     editor_toolbar.append(&export_csv_button);
     editor_toolbar.append(&export_json_button);
     let editor_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -3296,6 +3551,13 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         run_button,
         cancel_button,
         clear_button,
+        explain_button,
+        chart_button,
+        editor_results_stack,
+        chart_area,
+        plan_revealer,
+        plan_buffer,
+        chart_data,
         designer_stack,
         designer_conn_dropdown,
         designer_table_dropdown,
