@@ -14,6 +14,7 @@ XVFB_PID=$!
 cleanup() {
     kill "$APP_PID" 2>/dev/null || true
     kill "$XVFB_PID" 2>/dev/null || true
+    kill "${FEED_PID:-}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -32,6 +33,11 @@ sleep 1
 rm -f /tmp/unidb-demo.db
 sqlite3 /tmp/unidb-demo.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('Ada');"
 printf 'name\nAlan Turing\nGrace Hopper\n' > /tmp/unidb-import.csv
+mkdir -p /tmp/unidb-feed
+printf '{"tag_name":"v0.2.0","html_url":"https://example.test/unidb-0.2.0","published_at":"2026-12-01T00:00:00Z"}' > /tmp/unidb-feed/latest.json
+python3 -m http.server 8099 --directory /tmp/unidb-feed >/dev/null 2>&1 &
+FEED_PID=$!
+export UNIDB_UPDATE_FEED=http://127.0.0.1:8099/latest.json
 ./target/debug/unidb &
 APP_PID=$!
 
@@ -182,6 +188,13 @@ sleep 0.3
 xdotool click 1
 sleep 2
 import -window root /app/target/settings-page.png
+
+# Check the release feed for a newer version.
+xdotool mousemove $((X + 925)) $((Y + 260))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/settings-update.png
 
 # Switch to the dark scheme, capture it, then go back to the system scheme.
 xdotool mousemove $((X + 927)) $((Y + 142))
