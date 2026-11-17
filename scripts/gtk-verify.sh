@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Verifies the native window headlessly: starts Xvfb and Openbox, launches
-# UniDB, focuses the window, activates the SQLite probe button, waits for the
-# worker result, and saves a screenshot. The image provides every tool used.
+# UniDB, clicks the Studio and Security buttons, and saves a screenshot of each.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,15 +28,20 @@ docker run --rm \
                 kill \$APP_PID 2>/dev/null || true
                 exit 1
             fi
-            echo \"window: \$WINDOW\"
-            xdotool windowactivate --sync \$WINDOW
-            sleep 0.3
-            xdotool key --clearmodifiers Tab
-            sleep 0.3
-            xdotool key --clearmodifiers Return
+            eval \$(xdotool getwindowgeometry --shell \$WINDOW)
+            echo \"window: \$WINDOW at \$X,\$Y size \${WIDTH}x\${HEIGHT}\"
             sleep 2
-            import -window root /app/target/unidb-probe.png
+            xdotool mousemove \$((X + 52)) \$((Y + 41))
+            sleep 0.3
+            xdotool click 1
+            sleep 1
+            import -window root /app/target/studio-page.png
+            xdotool mousemove \$((X + 167)) \$((Y + 41))
+            sleep 0.3
+            xdotool click 1
+            sleep 1
+            import -window root /app/target/security-page.png
             kill \$APP_PID 2>/dev/null || true
-            echo \"screenshot: target/unidb-probe.png\"
+            echo \"screenshots: target/studio-page.png target/security-page.png\"
         "
     '

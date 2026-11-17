@@ -1,5 +1,6 @@
-//! Thin binary: parse the two flags, start logging, build the worker runtime,
-//! and hand over to the interface. All orchestration lives in `unidb-app`.
+//! Thin binary: parse the flags, start logging, build the worker runtime,
+//! bootstrap the app service, and hand over to the interface. All orchestration
+//! lives in `unidb-app`.
 
 use tracing_subscriber::EnvFilter;
 
@@ -32,12 +33,20 @@ fn run_interface() -> Result<(), String> {
         .worker_threads(4)
         .build()
         .map_err(|error| format!("Could not start the worker runtime: {error}"))?;
-    let service = std::sync::Arc::new(unidb_app::AppService::bootstrap_headless(
-        runtime.handle().clone(),
-    ));
-    unidb_ui::run(service)?;
+
+    let startup = runtime.block_on(unidb_app::AppService::bootstrap(runtime.handle().clone()));
+    let startup: Result<std::sync::Arc<unidb_app::AppService>, String> = startup
+        .map(std::sync::Arc::new)
+        .map_err(|error| format!("{} ({})", error.user_message(), error.code()));
+    let service_for_shutdown = startup.as_ref().ok().cloned();
+
+    let result = unidb_ui::run(runtime.handle().clone(), startup);
+
+    if let Some(service) = service_for_shutdown {
+        runtime.block_on(service.shutdown());
+    }
     runtime.shutdown_background();
-    Ok(())
+    result
 }
 
 #[cfg(not(feature = "gui"))]

@@ -9,11 +9,12 @@ description = "UniDB GTK4 and libadwaita interface"
 
 [features]
 default = []
-gui = ["dep:relm4", "dep:unidb-app"]
+gui = ["dep:relm4", "dep:unidb-app", "dep:tokio"]
 
 [dependencies]
 relm4 = { workspace = true, optional = true, features = ["libadwaita"] }
 unidb-app = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 
 [lints]
 workspace = true
