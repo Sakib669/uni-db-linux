@@ -25,7 +25,9 @@ use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
     PostgresConnector, RedisConnector, Session, SqliteConnector,
 };
-use unidb_store::{AuditEntry, KeyringKeyProvider, MasterKeyProvider, Store};
+use unidb_store::{
+    AuditEntry, HistoryEntry, KeyringKeyProvider, MasterKeyProvider, SavedQuery, Store,
+};
 
 use crate::bridge::{Bridge, QueryEvent};
 use crate::paths::default_data_dir;
@@ -742,6 +744,62 @@ impl AppService {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Records a history row without a live connection. Used by tests and by
+    /// future offline features.
+    pub async fn record_history_for_test(&self, sql: &str, status: &str) {
+        if let Some(store) = &self.store {
+            let _ = store
+                .record_history(None, sql, 0, None, status, None, None)
+                .await;
+        }
+    }
+
+    /// Searches the query history through FTS5, newest first.
+    pub async fn search_history(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<HistoryEntry>, UniDbError> {
+        self.require_store()?.search_history(query, limit).await
+    }
+
+    /// Deletes every history row.
+    pub async fn clear_history(&self) -> Result<u64, UniDbError> {
+        self.require_store()?.clear_history().await
+    }
+
+    /// Lists saved queries newest first.
+    pub async fn list_saved_queries(&self) -> Result<Vec<SavedQuery>, UniDbError> {
+        self.require_store()?.list_saved_queries().await
+    }
+
+    /// Saves a named statement.
+    pub async fn save_saved_query(
+        &self,
+        name: &str,
+        sql: &str,
+        connection_id: Option<Uuid>,
+    ) -> Result<SavedQuery, UniDbError> {
+        self.require_store()?
+            .save_saved_query(name, sql, connection_id)
+            .await
+    }
+
+    /// Deletes one saved query.
+    pub async fn delete_saved_query(&self, id: Uuid) -> Result<u64, UniDbError> {
+        self.require_store()?.delete_saved_query(id).await
+    }
+
+    /// Reads one setting.
+    pub async fn get_setting(&self, key: &str) -> Result<Option<serde_json::Value>, UniDbError> {
+        self.require_store()?.get_setting(key).await
+    }
+
+    /// Writes one setting.
+    pub async fn set_setting(&self, key: &str, value: serde_json::Value) -> Result<(), UniDbError> {
+        self.require_store()?.set_setting(key, value).await
     }
 
     /// Opens one in memory SQLite session and runs a version query. This is the

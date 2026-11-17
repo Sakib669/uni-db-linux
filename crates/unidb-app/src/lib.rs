@@ -12,6 +12,7 @@ pub use paths::default_data_dir;
 pub use security::{CheckStatus, SecurityCheck, SecurityReport};
 pub use service::{AppService, ExportReport, ImportOptions, ImportReport};
 pub use unidb_store::AuditEntry;
+pub use unidb_store::{HistoryEntry, SavedQuery};
 
 /// Grid and status text for a value, kept here so the interface never formats
 /// a driver type itself.

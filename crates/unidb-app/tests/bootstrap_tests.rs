@@ -384,3 +384,53 @@ async fn import_and_export_round_trip_through_files() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn history_saved_queries_and_settings_round_trip() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    service.record_history_for_test("SELECT 1", "success").await;
+    let history = service.search_history("", 20).await.expect("history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].sql, "SELECT 1");
+    assert_eq!(service.clear_history().await.expect("clear"), 1);
+    assert!(
+        service
+            .search_history("", 20)
+            .await
+            .expect("history")
+            .is_empty()
+    );
+
+    let saved = service
+        .save_saved_query("One", "SELECT 1", None)
+        .await
+        .expect("save");
+    let listed = service.list_saved_queries().await.expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        service.delete_saved_query(saved.id).await.expect("delete"),
+        1
+    );
+    assert!(service.list_saved_queries().await.expect("list").is_empty());
+
+    assert!(
+        service
+            .get_setting("color_scheme")
+            .await
+            .expect("get")
+            .is_none()
+    );
+    service
+        .set_setting("color_scheme", serde_json::json!("dark"))
+        .await
+        .expect("set");
+    assert_eq!(
+        service.get_setting("color_scheme").await.expect("get"),
+        Some(serde_json::json!("dark"))
+    );
+
+    service.shutdown().await;
+}
