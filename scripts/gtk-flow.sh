@@ -87,8 +87,23 @@ xdotool click 1
 sleep 2
 import -window root /app/target/navigator-page.png
 
-# Security page is the fourth sidebar row.
-xdotool mousemove $((X + 100)) $((Y + 194))
+# Editor page is the third sidebar row; run a query against the seeded table.
+xdotool mousemove $((X + 100)) $((Y + 154))
+sleep 0.3
+xdotool click 1
+sleep 1
+xdotool mousemove $((X + 700)) $((Y + 240))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 20 "SELECT * FROM users;"
+sleep 0.3
+xdotool key ctrl+Return
+sleep 2
+import -window root /app/target/editor-page.png
+
+# Security page is the fifth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 234))
 sleep 0.3
 xdotool click 1
 sleep 1
