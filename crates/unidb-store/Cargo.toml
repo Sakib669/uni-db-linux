@@ -1,0 +1,30 @@
+[package]
+name = "unidb-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UniDB SQLite app store, secret envelope, and audit log"
+
+[dependencies]
+unidb-core.workspace = true
+aes-gcm.workspace = true
+base64.workspace = true
+chrono.workspace = true
+hmac.workspace = true
+keyring.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
