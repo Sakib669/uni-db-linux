@@ -21,6 +21,13 @@ cargo test --workspace --no-default-features
 cargo run --no-default-features
 ```
 
+Engine tests start real servers with testcontainers, so Docker must be available. PostgreSQL, MySQL, MariaDB, Redis, and MongoDB run in the default suite. CockroachDB, Cassandra, and MSSQL use large images and are ignored by default:
+
+```bash
+cargo test --workspace --no-default-features
+cargo test -p unidb-engine -- --ignored
+```
+
 ## GTK build and verification container
 
 When the host lacks GTK development packages, build and verify the native app in the pinned Ubuntu 24.04 image. The image carries the GTK stack; the host Rust toolchain and cargo cache are mounted in.

@@ -36,7 +36,9 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [x] Decide the engine layer (spec): [0002](../specs/0002-engine-layer.md)
 - [ ] Build it: /develop Engine layer
   - [x] SQL family: PostgreSQL, MySQL, MariaDB, and CockroachDB with live container tests (5 tests plus CockroachDB, all passing)
-  - [ ] Redis, MongoDB, Cassandra, and MSSQL connectors
+  - [x] Redis and MongoDB connectors with live container tests (4 tests passing)
+  - [x] Cassandra and MSSQL connectors with live container tests (both passing; images are large so the tests are ignored by default)
+  - All nine engines registered in the app service bootstrap
 - [ ] Verify it: /check verify Engine layer
 - [ ] Test it: /test Engine layer
 
