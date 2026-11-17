@@ -13,6 +13,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 5 | Connection manager and navigator | in-progress | [0005](../specs/0005-connection-manager.md) |
 | 6 | SQL editor and result grid | in-progress | [0006](../specs/0006-sql-editor.md) |
 | 7 | Table designer | in-progress | [0007](../specs/0007-table-designer.md) |
+| 8 | Import and export | in-progress | [0008](../specs/0008-import-export.md) |
 
 ## Features
 
@@ -129,6 +130,24 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [ ] Follow up: type changes, index and foreign key editing, table rebuilds, schema diff
 - [ ] Verify it: /check verify Table designer
 - [ ] Test it: /test Table designer
+
+### 8. Import and export
+
+**Intent**: Move data in and out. Import CSV and JSON files into a live table with type coercion, header mapping, batched transactional inserts, and an honest report. Export the current query result as CSV or JSON through a save dialog. Domain parsing and formatting are pure and tested.
+
+**Done when**: a user imports a CSV or JSON file into a table and sees rows read, inserted, and rejected with reasons; exports a query result to CSV or JSON; and every transfer is audited without recording row contents.
+
+- [x] Decide the transfer model (spec): [0008](../specs/0008-import-export.md)
+- [x] Build it: /develop Import and export
+  - [x] Domain module: CSV and JSON parsing, type coercion, insert generation with quoting, CSV and JSON formatting, unit tests
+  - [x] Service import with header mapping, missing column rules, rejection warnings, 200 row transactional batches, and audit entries
+  - [x] Service export through the editor query path with file writing and audit entries
+  - [x] Transfer page with connection and table selection, CSV or JSON format, header switch, path entry, Browse, Import, and report status
+  - [x] Editor Export CSV and Export JSON buttons with a save dialog
+  - [x] Verified import through the container screenshot with a seeded CSV
+- [ ] Follow up: streaming imports with progress and cancel, interactive column mapping, update and upsert, Excel and Parquet
+- [ ] Verify it: /check verify Import and export
+- [ ] Test it: /test Import and export
 
 ## Deferred
 
