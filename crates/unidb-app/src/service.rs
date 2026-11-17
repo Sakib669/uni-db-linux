@@ -39,6 +39,9 @@ enum Command {
         database: String,
         reply: oneshot::Sender<Result<Vec<String>, UniDbError>>,
     },
+    Cancel {
+        reply: oneshot::Sender<Result<(), UniDbError>>,
+    },
     Shutdown,
 }
 
@@ -305,36 +308,55 @@ impl AppService {
         })?;
 
         if let Some(store) = &self.store {
-            match &result {
-                Ok(query_result) => {
-                    store
-                        .record_history(
-                            Some(connection_id),
-                            sql,
-                            query_result.elapsed_ms,
-                            Some(i64::try_from(query_result.rows.len()).unwrap_or(i64::MAX)),
-                            "success",
-                            None,
-                            None,
-                        )
-                        .await?;
-                }
-                Err(error) => {
-                    store
-                        .record_history(
-                            Some(connection_id),
-                            sql,
-                            0,
-                            None,
-                            "error",
-                            Some(error.code()),
-                            Some(error.user_message()),
-                        )
-                        .await?;
-                }
-            }
+            let (outcome, rows, elapsed, code) = match &result {
+                Ok(query_result) => (
+                    "success",
+                    i64::try_from(query_result.rows.len()).unwrap_or(i64::MAX),
+                    query_result.elapsed_ms,
+                    None,
+                ),
+                Err(error) => ("error", 0, 0, Some(error.code())),
+            };
+            store
+                .record_history(
+                    Some(connection_id),
+                    sql,
+                    elapsed,
+                    Some(rows),
+                    outcome,
+                    code,
+                    None,
+                )
+                .await?;
+            store
+                .add_audit(
+                    "query_run",
+                    Some(connection_id),
+                    outcome,
+                    serde_json::json!({
+                        "rows": rows,
+                        "elapsed_ms": elapsed,
+                        "error_code": code,
+                    }),
+                )
+                .await?;
         }
         result
+    }
+
+    /// Asks the engine to cancel the running statement on a connection.
+    pub async fn cancel(&self, connection_id: Uuid) -> Result<(), UniDbError> {
+        let sender = self.connection_sender(connection_id).await?;
+        let (reply_sender, reply_receiver) = oneshot::channel();
+        sender
+            .send(Command::Cancel {
+                reply: reply_sender,
+            })
+            .await
+            .map_err(|_| connection_stopped_error())?;
+        reply_receiver
+            .await
+            .map_err(|_| connection_stopped_error())?
     }
 
     /// Lists databases or keyspaces for an open connection.
@@ -481,6 +503,10 @@ impl ConnectionActor {
                 }
                 Command::ListTables { database, reply } => {
                     let result = self.session.list_tables(&database).await;
+                    let _ = reply.send(result);
+                }
+                Command::Cancel { reply } => {
+                    let result = self.session.cancel().await;
                     let _ = reply.send(result);
                 }
                 Command::Shutdown => break,

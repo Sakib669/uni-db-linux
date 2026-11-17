@@ -193,3 +193,32 @@ async fn navigator_lists_databases_and_tables_for_an_open_connection() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn query_runs_are_audited_and_cancel_reports_unsupported() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+    service
+        .execute(profile.id, "SELECT 1 AS one")
+        .await
+        .expect("query");
+
+    let audit = service.recent_audit(10).await.expect("audit");
+    assert!(
+        audit.iter().any(|entry| entry.action == "query_run"),
+        "query runs are audited"
+    );
+
+    let error = service
+        .cancel(profile.id)
+        .await
+        .expect_err("SQLite cannot cancel");
+    assert_eq!(error.code(), "cancel_unsupported");
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
