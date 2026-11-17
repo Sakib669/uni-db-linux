@@ -254,3 +254,37 @@ async fn a_corrupt_database_reports_a_safe_error() {
     );
     assert!(error.user_message().to_lowercase().contains("database"));
 }
+
+#[tokio::test]
+async fn saved_queries_round_trip_and_history_can_be_cleared() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unidb.db");
+    let provider = test_provider();
+    let store = Store::open(&path, &provider).await.expect("open store");
+
+    let saved = store
+        .save_saved_query("Recent users", "SELECT * FROM users", None)
+        .await
+        .expect("save");
+    assert_eq!(saved.name, "Recent users");
+    let listed = store.list_saved_queries().await.expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].sql, "SELECT * FROM users");
+
+    assert_eq!(store.delete_saved_query(saved.id).await.expect("delete"), 1);
+    assert!(store.list_saved_queries().await.expect("list").is_empty());
+
+    store
+        .record_history(None, "SELECT 1", 3, Some(1), "success", None, None)
+        .await
+        .expect("history");
+    assert_eq!(store.search_history("", 10).await.expect("search").len(), 1);
+    assert_eq!(store.clear_history().await.expect("clear"), 1);
+    assert!(
+        store
+            .search_history("", 10)
+            .await
+            .expect("search")
+            .is_empty()
+    );
+}

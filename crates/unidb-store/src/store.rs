@@ -30,6 +30,19 @@ pub struct AuditEntry {
     pub detail: serde_json::Value,
 }
 
+/// Saved query row, returned by `list_saved_queries`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedQuery {
+    pub id: Uuid,
+    pub name: String,
+    pub sql: String,
+    pub connection_id: Option<Uuid>,
+    pub folder: Option<String>,
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Stored query history row, returned by `search_history`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEntry {
@@ -486,6 +499,101 @@ impl Store {
                 })
             })
             .transpose()
+    }
+
+    /// Saves a named statement and returns the stored row.
+    pub async fn save_saved_query(
+        &self,
+        name: &str,
+        sql: &str,
+        connection_id: Option<Uuid>,
+    ) -> Result<SavedQuery, UniDbError> {
+        let id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO saved_queries (id, name, sql, connection_id, folder, tags, created_at, updated_at)
+             VALUES (?, ?, ?, ?, '', '[]', ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(name)
+        .bind(sql)
+        .bind(connection_id.map(|value| value.to_string()))
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            UniDbError::internal("Could not save the query").with_source(error)
+        })?;
+        Ok(SavedQuery {
+            id,
+            name: name.to_string(),
+            sql: sql.to_string(),
+            connection_id,
+            folder: None,
+            tags: Vec::new(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    /// Lists saved queries newest first.
+    pub async fn list_saved_queries(&self) -> Result<Vec<SavedQuery>, UniDbError> {
+        let rows = sqlx::query(
+            "SELECT id, name, sql, connection_id, folder, tags, created_at, updated_at
+             FROM saved_queries ORDER BY created_at DESC, name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| {
+            UniDbError::internal("Could not list the saved queries").with_source(error)
+        })?;
+        rows.into_iter()
+            .map(|row| {
+                let id: String = row.try_get("id")?;
+                let connection: Option<String> = row.try_get("connection_id")?;
+                let tags: String = row.try_get("tags")?;
+                Ok(SavedQuery {
+                    id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()),
+                    name: row.try_get("name")?,
+                    sql: row.try_get("sql")?,
+                    connection_id: connection.and_then(|value| Uuid::parse_str(&value).ok()),
+                    folder: row
+                        .try_get::<String, _>("folder")
+                        .ok()
+                        .filter(|value| !value.is_empty()),
+                    tags: serde_json::from_str(&tags).unwrap_or_default(),
+                    created_at: row.try_get("created_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|error| {
+                UniDbError::internal("Could not read the saved queries").with_source(error)
+            })
+    }
+
+    /// Deletes one saved query and returns how many rows went away.
+    pub async fn delete_saved_query(&self, id: Uuid) -> Result<u64, UniDbError> {
+        let result = sqlx::query("DELETE FROM saved_queries WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not delete the saved query").with_source(error)
+            })?;
+        Ok(result.rows_affected())
+    }
+
+    /// Deletes every history row and returns how many went away.
+    pub async fn clear_history(&self) -> Result<u64, UniDbError> {
+        let result = sqlx::query("DELETE FROM query_history")
+            .execute(&self.pool)
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not clear the query history").with_source(error)
+            })?;
+        Ok(result.rows_affected())
     }
 
     pub async fn add_audit(
