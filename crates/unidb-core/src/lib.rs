@@ -7,6 +7,7 @@ pub mod profile;
 pub mod schema;
 pub mod transfer;
 pub mod value;
+pub mod visual;
 
 pub use engine::{Capabilities, Engine};
 pub use error::{ErrorCategory, UniDbError};
@@ -19,3 +20,4 @@ pub use transfer::{
     rows_to_json,
 };
 pub use value::{Column, QueryResult, Value};
+pub use visual::{ChartPoint, chart_series, explain_statement, numeric_type};
