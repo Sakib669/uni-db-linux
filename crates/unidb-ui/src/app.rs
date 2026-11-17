@@ -12,9 +12,22 @@ use sourceview5::prelude::*;
 use uuid::Uuid;
 
 use unidb_app::{AppService, AuditEntry, CheckStatus, SecurityReport};
-use unidb_core::{ConnectionProfile, Engine, SslMode};
+use unidb_core::{
+    ColumnDesign, ConnectionProfile, Engine, SqlDialect, SslMode, TableColumnInfo, TableDesign,
+    alter_table_sql, create_table_sql,
+};
 
 const ABOUT_NAME: &str = "UniDB";
+
+struct ColumnWidgets {
+    name: gtk::Entry,
+    type_name: gtk::Entry,
+    primary_key: gtk::CheckButton,
+    not_null: gtk::CheckButton,
+    unique: gtk::CheckButton,
+    auto_increment: gtk::CheckButton,
+    default: gtk::Entry,
+}
 
 struct FormValues {
     name: String,
@@ -91,6 +104,22 @@ struct AppModel {
     run_button: gtk::Button,
     cancel_button: gtk::Button,
     clear_button: gtk::Button,
+    designer_stack: gtk::Stack,
+    designer_conn_dropdown: gtk::DropDown,
+    designer_table_dropdown: gtk::DropDown,
+    designer_name_entry: gtk::Entry,
+    designer_columns_box: gtk::Box,
+    designer_preview_buffer: sourceview5::Buffer,
+    designer_status: gtk::Label,
+    designer_ids: Vec<Uuid>,
+    designer_connection: Option<Uuid>,
+    designer_database: String,
+    designer_table: Option<String>,
+    designer_tables: Vec<String>,
+    designer_original: Vec<TableColumnInfo>,
+    designer_columns: Vec<ColumnDesign>,
+    designer_widgets: Vec<ColumnWidgets>,
+    designer_statements: Vec<String>,
 }
 
 enum AppMsg {
@@ -135,6 +164,16 @@ enum AppMsg {
     QueryFinished(Box<unidb_core::QueryResult>),
     QueryFailed(String),
     ClearResults,
+    DesignerConnectionSelected(u32),
+    DesignerTables(Box<Vec<String>>),
+    DesignerTableSelected(u32),
+    DesignerDescribed(String, Box<Vec<TableColumnInfo>>),
+    DesignerAddColumn,
+    DesignerRemoveColumn(usize),
+    DesignerPreview,
+    DesignerApply,
+    DesignerApplied(usize),
+    DesignerFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -181,6 +220,16 @@ impl std::fmt::Debug for AppMsg {
             Self::QueryFinished(_) => "QueryFinished",
             Self::QueryFailed(_) => "QueryFailed",
             Self::ClearResults => "ClearResults",
+            Self::DesignerConnectionSelected(_) => "DesignerConnectionSelected",
+            Self::DesignerTables(_) => "DesignerTables",
+            Self::DesignerTableSelected(_) => "DesignerTableSelected",
+            Self::DesignerDescribed(_, _) => "DesignerDescribed",
+            Self::DesignerAddColumn => "DesignerAddColumn",
+            Self::DesignerRemoveColumn(_) => "DesignerRemoveColumn",
+            Self::DesignerPreview => "DesignerPreview",
+            Self::DesignerApply => "DesignerApply",
+            Self::DesignerApplied(_) => "DesignerApplied",
+            Self::DesignerFailed(_) => "DesignerFailed",
         })
     }
 }
@@ -227,6 +276,13 @@ struct ShellWidgets {
     run_button: gtk::Button,
     cancel_button: gtk::Button,
     clear_button: gtk::Button,
+    designer_stack: gtk::Stack,
+    designer_conn_dropdown: gtk::DropDown,
+    designer_table_dropdown: gtk::DropDown,
+    designer_name_entry: gtk::Entry,
+    designer_columns_box: gtk::Box,
+    designer_preview_buffer: sourceview5::Buffer,
+    designer_status: gtk::Label,
 }
 
 #[relm4::component]
@@ -317,6 +373,22 @@ impl SimpleComponent for AppModel {
             run_button: widgets.run_button,
             cancel_button: widgets.cancel_button,
             clear_button: widgets.clear_button,
+            designer_stack: widgets.designer_stack,
+            designer_conn_dropdown: widgets.designer_conn_dropdown,
+            designer_table_dropdown: widgets.designer_table_dropdown,
+            designer_name_entry: widgets.designer_name_entry,
+            designer_columns_box: widgets.designer_columns_box,
+            designer_preview_buffer: widgets.designer_preview_buffer,
+            designer_status: widgets.designer_status,
+            designer_ids: Vec::new(),
+            designer_connection: None,
+            designer_database: "main".to_string(),
+            designer_table: None,
+            designer_tables: Vec::new(),
+            designer_original: Vec::new(),
+            designer_columns: Vec::new(),
+            designer_widgets: Vec::new(),
+            designer_statements: Vec::new(),
         };
 
         if let Some(error) = &model.error {
@@ -380,7 +452,10 @@ impl SimpleComponent for AppModel {
                 if index == 2 {
                     self.refresh_editor_connections(&sender);
                 }
-                if index == 4 && !self.security_loaded {
+                if index == 3 {
+                    self.refresh_designer(&sender);
+                }
+                if index == 5 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -618,6 +693,7 @@ impl SimpleComponent for AppModel {
                 self.populate_connections(&sender);
                 self.refresh_navigator_connections(&sender);
                 self.refresh_editor_connections(&sender);
+                self.refresh_designer(&sender);
             }
             AppMsg::ConnectionFailed(message) => {
                 self.busy = false;
@@ -728,6 +804,150 @@ impl SimpleComponent for AppModel {
                 self.editor_status.set_label("Ready.");
                 self.editor_error.set_visible(false);
             }
+            AppMsg::DesignerConnectionSelected(index) => {
+                if let Some(id) = self.designer_ids.get(index as usize).copied() {
+                    self.designer_connection = Some(id);
+                    self.designer_database = self.designer_database_for(id);
+                    self.designer_table = None;
+                    self.designer_original.clear();
+                    self.load_designer_tables(&sender);
+                }
+            }
+            AppMsg::DesignerTables(tables) => {
+                self.designer_tables = *tables;
+                let mut names = vec!["New table".to_string()];
+                names.extend(self.designer_tables.iter().cloned());
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let model = gtk::StringList::new(&refs);
+                self.designer_table_dropdown.set_model(Some(&model));
+                let selected = self
+                    .designer_table
+                    .as_ref()
+                    .and_then(|table| self.designer_tables.iter().position(|item| item == table))
+                    .map(|position| position as u32 + 1)
+                    .unwrap_or(0);
+                self.designer_table_dropdown.set_selected(selected);
+            }
+            AppMsg::DesignerTableSelected(index) => {
+                if index == 0 {
+                    self.new_designer_table(&sender);
+                    return;
+                }
+                let Some(table) = self.designer_tables.get(index as usize - 1).cloned() else {
+                    return;
+                };
+                let Some(id) = self.designer_connection else {
+                    return;
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                let database = self.designer_database.clone();
+                self.handle.spawn(async move {
+                    match service.describe_table(id, &database, &table).await {
+                        Ok(columns) => {
+                            sender.input(AppMsg::DesignerDescribed(table, Box::new(columns)));
+                        }
+                        Err(error) => sender.input(AppMsg::DesignerFailed(format!(
+                            "Could not read the table: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::DesignerDescribed(table, columns) => {
+                self.designer_table = Some(table.clone());
+                self.designer_name_entry.set_text(&table);
+                self.designer_original = *columns;
+                self.designer_columns = self
+                    .designer_original
+                    .iter()
+                    .map(TableColumnInfo::to_design)
+                    .collect();
+                self.rebuild_designer_columns(&sender);
+                self.designer_statements.clear();
+                self.designer_preview_buffer.set_text("");
+                self.designer_status.set_label(&format!(
+                    "Loaded {} column{}.",
+                    self.designer_columns.len(),
+                    plural(self.designer_columns.len())
+                ));
+            }
+            AppMsg::DesignerAddColumn => {
+                self.sync_designer_columns();
+                let name = format!("column_{}", self.designer_columns.len() + 1);
+                self.designer_columns.push(ColumnDesign::new(name, "TEXT"));
+                self.rebuild_designer_columns(&sender);
+            }
+            AppMsg::DesignerRemoveColumn(index) => {
+                self.sync_designer_columns();
+                if self.designer_columns.len() > 1 && index < self.designer_columns.len() {
+                    self.designer_columns.remove(index);
+                    self.rebuild_designer_columns(&sender);
+                }
+            }
+            AppMsg::DesignerPreview => match self.preview_designer() {
+                Ok(statements) => {
+                    let count = statements.len();
+                    self.designer_statements = statements;
+                    self.designer_status
+                        .set_label(&format!("Preview: {count} statement{}.", plural(count)));
+                }
+                Err(error) => self.show_toast(error.user_message()),
+            },
+            AppMsg::DesignerApply => {
+                let statements = match self.preview_designer() {
+                    Ok(statements) => statements,
+                    Err(error) => {
+                        self.show_toast(error.user_message());
+                        return;
+                    }
+                };
+                self.designer_preview_buffer.set_text("");
+                for statement in &statements {
+                    self.designer_preview_buffer
+                        .insert_at_cursor(&format!("{statement};\n\n"));
+                }
+                let Some(id) = self.designer_connection else {
+                    return;
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                self.designer_statements = statements.clone();
+                let count = statements.len();
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.apply_statements(id, &statements).await {
+                        Ok(()) => sender.input(AppMsg::DesignerApplied(count)),
+                        Err(error) => sender.input(AppMsg::DesignerFailed(format!(
+                            "Could not apply the change: {} ({})",
+                            error.user_message(),
+                            error.code()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::DesignerApplied(count) => {
+                self.designer_status
+                    .set_label(&format!("Applied {count} statement{}", plural(count)));
+                self.show_toast("Table change applied.");
+                self.designer_statements.clear();
+                if self.designer_table.is_none() {
+                    let name = self.designer_name_entry.text().trim().to_string();
+                    if !name.is_empty() {
+                        self.designer_table = Some(name);
+                    }
+                }
+                self.load_designer_tables(&sender);
+            }
+            AppMsg::DesignerFailed(message) => {
+                self.designer_status.set_label(&message);
+                self.show_toast(&message);
+            }
         }
     }
 }
@@ -748,7 +968,8 @@ impl AppModel {
             0 => ("connections", "Connections"),
             1 => ("navigator", "Navigator"),
             2 => ("editor", "Editor"),
-            3 => ("studio", "Studio"),
+            3 => ("designer", "Designer"),
+            4 => ("studio", "Studio"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -1215,6 +1436,215 @@ impl AppModel {
         ));
     }
 
+    fn designer_database_for(&self, id: Uuid) -> String {
+        self.connections
+            .iter()
+            .find(|profile| profile.id == id)
+            .map(|profile| {
+                if profile.database.is_empty() {
+                    "main".to_string()
+                } else {
+                    profile.database.clone()
+                }
+            })
+            .unwrap_or_else(|| "main".to_string())
+    }
+
+    fn designer_dialect(&self) -> Option<SqlDialect> {
+        let id = self.designer_connection?;
+        let engine = self
+            .connections
+            .iter()
+            .find(|profile| profile.id == id)
+            .map(|profile| profile.engine)?;
+        SqlDialect::for_engine(engine)
+    }
+
+    fn refresh_designer(&mut self, sender: &ComponentSender<Self>) {
+        let live: Vec<ConnectionProfile> = self
+            .connections
+            .iter()
+            .filter(|profile| self.connected.contains(&profile.id))
+            .cloned()
+            .collect();
+        self.designer_ids = live.iter().map(|profile| profile.id).collect();
+        let names: Vec<&str> = live.iter().map(|profile| profile.name.as_str()).collect();
+        let model = gtk::StringList::new(&names);
+        self.designer_conn_dropdown.set_model(Some(&model));
+        if live.is_empty() {
+            self.designer_connection = None;
+            self.designer_stack.set_visible_child_name("empty");
+            return;
+        }
+        let current = self
+            .designer_connection
+            .filter(|id| self.designer_ids.contains(id))
+            .unwrap_or(self.designer_ids[0]);
+        self.designer_connection = Some(current);
+        self.designer_database = self.designer_database_for(current);
+        let index = self
+            .designer_ids
+            .iter()
+            .position(|id| *id == current)
+            .unwrap_or(0);
+        self.designer_conn_dropdown.set_selected(index as u32);
+        if self.designer_dialect().is_none() {
+            self.designer_stack.set_visible_child_name("unsupported");
+            return;
+        }
+        self.designer_stack.set_visible_child_name("form");
+        if self.designer_columns.is_empty() {
+            self.new_designer_table(sender);
+        }
+        self.load_designer_tables(sender);
+    }
+
+    fn load_designer_tables(&mut self, sender: &ComponentSender<Self>) {
+        let Some(id) = self.designer_connection else {
+            return;
+        };
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        let database = self.designer_database.clone();
+        self.handle.spawn(async move {
+            match service.list_tables(id, &database).await {
+                Ok(tables) => sender.input(AppMsg::DesignerTables(Box::new(tables))),
+                Err(error) => sender.input(AppMsg::DesignerFailed(format!(
+                    "Could not list tables: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
+    fn new_designer_table(&mut self, sender: &ComponentSender<Self>) {
+        self.designer_table = None;
+        self.designer_original.clear();
+        self.designer_name_entry.set_text("");
+        let mut id = ColumnDesign::new("id", "INTEGER");
+        id.primary_key = true;
+        id.auto_increment = true;
+        id.nullable = false;
+        self.designer_columns = vec![id];
+        self.designer_statements.clear();
+        self.designer_preview_buffer.set_text("");
+        self.designer_status.set_label("New table.");
+        self.rebuild_designer_columns(sender);
+    }
+
+    fn sync_designer_columns(&mut self) {
+        if self.designer_widgets.len() != self.designer_columns.len() {
+            return;
+        }
+        for (column, widgets) in self.designer_columns.iter_mut().zip(&self.designer_widgets) {
+            column.name = widgets.name.text().to_string();
+            column.type_name = widgets.type_name.text().to_string();
+            column.primary_key = widgets.primary_key.is_active();
+            column.nullable = !widgets.not_null.is_active();
+            column.unique = widgets.unique.is_active();
+            column.auto_increment = widgets.auto_increment.is_active();
+            let default = widgets.default.text().to_string();
+            column.default = if default.trim().is_empty() {
+                None
+            } else {
+                Some(default)
+            };
+        }
+    }
+
+    fn rebuild_designer_columns(&mut self, sender: &ComponentSender<Self>) {
+        while let Some(child) = self.designer_columns_box.first_child() {
+            self.designer_columns_box.remove(&child);
+        }
+        self.designer_widgets.clear();
+        for (index, column) in self.designer_columns.iter().enumerate() {
+            let name = gtk::Entry::builder()
+                .text(&column.name)
+                .placeholder_text("name")
+                .width_chars(12)
+                .build();
+            let type_name = gtk::Entry::builder()
+                .text(&column.type_name)
+                .placeholder_text("type")
+                .width_chars(12)
+                .build();
+            let primary_key = gtk::CheckButton::with_label("PK");
+            primary_key.set_active(column.primary_key);
+            primary_key.set_tooltip_text(Some("Primary key"));
+            let not_null = gtk::CheckButton::with_label("NN");
+            not_null.set_active(!column.nullable);
+            not_null.set_tooltip_text(Some("Not null"));
+            let unique = gtk::CheckButton::with_label("UQ");
+            unique.set_active(column.unique);
+            unique.set_tooltip_text(Some("Unique"));
+            let auto_increment = gtk::CheckButton::with_label("AI");
+            auto_increment.set_active(column.auto_increment);
+            auto_increment.set_tooltip_text(Some("Auto increment"));
+            let default = gtk::Entry::builder()
+                .text(column.default.clone().unwrap_or_default())
+                .placeholder_text("default")
+                .width_chars(10)
+                .build();
+            let remove = gtk::Button::from_icon_name("list-remove-symbolic");
+            remove.set_tooltip_text(Some("Remove column"));
+            {
+                let sender = sender.clone();
+                remove.connect_clicked(move |_| sender.input(AppMsg::DesignerRemoveColumn(index)));
+            }
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            row.append(&name);
+            row.append(&type_name);
+            row.append(&primary_key);
+            row.append(&not_null);
+            row.append(&unique);
+            row.append(&auto_increment);
+            row.append(&default);
+            row.append(&remove);
+            self.designer_columns_box.append(&row);
+            self.designer_widgets.push(ColumnWidgets {
+                name,
+                type_name,
+                primary_key,
+                not_null,
+                unique,
+                auto_increment,
+                default,
+            });
+        }
+    }
+
+    fn preview_designer(&mut self) -> Result<Vec<String>, unidb_core::UniDbError> {
+        self.sync_designer_columns();
+        let Some(dialect) = self.designer_dialect() else {
+            return Err(unidb_core::UniDbError::new(
+                "table_design_unsupported",
+                unidb_core::ErrorCategory::Unsupported,
+                "The table designer is not available for this engine",
+            ));
+        };
+        let table_name = self.designer_name_entry.text().to_string();
+        let design = TableDesign {
+            name: table_name.clone(),
+            columns: self.designer_columns.clone(),
+        };
+        let statements = match &self.designer_table {
+            Some(table) if !self.designer_original.is_empty() => {
+                alter_table_sql(dialect, table, &self.designer_original, &design)?
+            }
+            Some(table) => alter_table_sql(dialect, table, &self.designer_original, &design)?,
+            None => create_table_sql(dialect, &design)?,
+        };
+        self.designer_preview_buffer.set_text("");
+        for statement in &statements {
+            self.designer_preview_buffer
+                .insert_at_cursor(&format!("{statement};\n\n"));
+        }
+        Ok(statements)
+    }
+
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
         let Some(service) = &self.service else {
             return;
@@ -1529,6 +1959,136 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     connections_stack.add_named(&list_page_content, Some("list"));
     connections_stack.add_named(&form_page_content, Some("form"));
 
+    // Designer page.
+    let designer_status = gtk::Label::builder()
+        .label("Connect to a database first.")
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    let designer_columns_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    designer_columns_box.set_margin_all(8);
+    let add_column_button = gtk::Button::with_label("Add column");
+    {
+        let sender = sender.clone();
+        add_column_button.connect_clicked(move |_| sender.input(AppMsg::DesignerAddColumn));
+    }
+    let designer_name_entry = gtk::Entry::builder()
+        .placeholder_text("Table name")
+        .hexpand(true)
+        .build();
+    let designer_table_dropdown = gtk::DropDown::new(
+        Some(gtk::StringList::new(&["New table"])),
+        None::<gtk::Expression>,
+    );
+    {
+        let sender = sender.clone();
+        designer_table_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::DesignerTableSelected(dropdown.selected()));
+        });
+    }
+    let designer_conn_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    designer_conn_dropdown.set_hexpand(true);
+    {
+        let sender = sender.clone();
+        designer_conn_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::DesignerConnectionSelected(dropdown.selected()));
+        });
+    }
+    let designer_preview_button = gtk::Button::with_label("Preview SQL");
+    {
+        let sender = sender.clone();
+        designer_preview_button.connect_clicked(move |_| sender.input(AppMsg::DesignerPreview));
+    }
+    let designer_apply_button = gtk::Button::with_label("Apply");
+    designer_apply_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        designer_apply_button.connect_clicked(move |_| sender.input(AppMsg::DesignerApply));
+    }
+    let designer_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    designer_toolbar.set_margin_all(10);
+    designer_toolbar.append(&designer_conn_dropdown);
+    designer_toolbar.append(&designer_table_dropdown);
+    designer_toolbar.append(&designer_preview_button);
+    designer_toolbar.append(&designer_apply_button);
+    let designer_name_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    designer_name_row.set_margin_start(10);
+    designer_name_row.set_margin_end(10);
+    designer_name_row.set_margin_top(4);
+    designer_name_row.append(&designer_name_entry);
+    designer_name_row.append(&add_column_button);
+    let column_header = gtk::Label::builder()
+        .label("Columns: name, type, primary key, not null, unique, auto increment, default")
+        .xalign(0.0)
+        .build();
+    column_header.add_css_class("unidb-muted");
+    column_header.set_margin_start(10);
+    column_header.set_margin_top(8);
+    let form_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    form_box.append(&designer_name_row);
+    form_box.append(&column_header);
+    form_box.append(&designer_columns_box);
+    let form_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vexpand(true)
+        .child(&form_box)
+        .build();
+    let designer_preview_buffer = sourceview5::Buffer::new(None::<&gtk::TextTagTable>);
+    if let Some(language) = sourceview5::LanguageManager::default().language("sql") {
+        designer_preview_buffer.set_language(Some(&language));
+    }
+    designer_preview_buffer.set_highlight_syntax(true);
+    if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme("Adwaita") {
+        designer_preview_buffer.set_style_scheme(Some(&scheme));
+    }
+    let designer_preview = sourceview5::View::with_buffer(&designer_preview_buffer);
+    designer_preview.set_monospace(true);
+    designer_preview.set_editable(false);
+    designer_preview.set_cursor_visible(false);
+    designer_preview.set_vexpand(true);
+    let preview_scroll = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .child(&designer_preview)
+        .build();
+    let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let preview_label = gtk::Label::builder()
+        .label("Preview")
+        .xalign(0.0)
+        .margin_start(10)
+        .margin_top(6)
+        .build();
+    preview_label.add_css_class("heading");
+    preview_box.append(&preview_label);
+    preview_box.append(&preview_scroll);
+    let designer_paned = gtk::Paned::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .start_child(&form_scroll)
+        .end_child(&preview_box)
+        .position(300)
+        .vexpand(true)
+        .build();
+    let designer_form = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    designer_form.append(&designer_toolbar);
+    designer_form.append(&designer_paned);
+    designer_form.append(&designer_status);
+    let designer_empty = adw::StatusPage::builder()
+        .icon_name("x-office-spreadsheet-symbolic")
+        .title("No live connection")
+        .description("Connect to a saved SQL database in Connections, then open the designer.")
+        .build();
+    let designer_unsupported = adw::StatusPage::builder()
+        .icon_name("x-office-spreadsheet-symbolic")
+        .title("Designer not available")
+        .description("The table designer supports SQLite, PostgreSQL, CockroachDB, MySQL, and MariaDB in this build.")
+        .build();
+    let designer_stack = gtk::Stack::new();
+    designer_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    designer_stack.add_named(&designer_empty, Some("empty"));
+    designer_stack.add_named(&designer_unsupported, Some("unsupported"));
+    designer_stack.add_named(&designer_form, Some("form"));
+    designer_stack.set_visible_child_name("empty");
+
     // Editor page.
     let editor_status = gtk::Label::builder()
         .label("Connect to a database first.")
@@ -1736,6 +2296,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.add_named(&connections_stack, Some("connections"));
     page_stack.add_named(&navigator_stack, Some("navigator"));
     page_stack.add_named(&editor_page, Some("editor"));
+    page_stack.add_named(&designer_stack, Some("designer"));
     page_stack.add_named(&studio_page, Some("studio"));
     page_stack.add_named(&security_scroll, Some("security"));
 
@@ -1747,6 +2308,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         ("network-server-symbolic", "Connections"),
         ("view-list-symbolic", "Navigator"),
         ("utilities-terminal-symbolic", "Editor"),
+        ("x-office-spreadsheet-symbolic", "Designer"),
         ("utilities-terminal-symbolic", "Studio"),
         ("security-high-symbolic", "Security"),
     ] {
@@ -1855,6 +2417,13 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         run_button,
         cancel_button,
         clear_button,
+        designer_stack,
+        designer_conn_dropdown,
+        designer_table_dropdown,
+        designer_name_entry,
+        designer_columns_box,
+        designer_preview_buffer,
+        designer_status,
     }
 }
 
