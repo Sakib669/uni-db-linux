@@ -32,6 +32,13 @@ enum Command {
         sql: String,
         reply: oneshot::Sender<Result<QueryResult, UniDbError>>,
     },
+    ListDatabases {
+        reply: oneshot::Sender<Result<Vec<String>, UniDbError>>,
+    },
+    ListTables {
+        database: String,
+        reply: oneshot::Sender<Result<Vec<String>, UniDbError>>,
+    },
     Shutdown,
 }
 
@@ -330,6 +337,59 @@ impl AppService {
         result
     }
 
+    /// Lists databases or keyspaces for an open connection.
+    pub async fn list_databases(&self, connection_id: Uuid) -> Result<Vec<String>, UniDbError> {
+        let sender = self.connection_sender(connection_id).await?;
+        let (reply_sender, reply_receiver) = oneshot::channel();
+        sender
+            .send(Command::ListDatabases {
+                reply: reply_sender,
+            })
+            .await
+            .map_err(|_| connection_stopped_error())?;
+        reply_receiver
+            .await
+            .map_err(|_| connection_stopped_error())?
+    }
+
+    /// Lists tables, collections, or keys inside a database.
+    pub async fn list_tables(
+        &self,
+        connection_id: Uuid,
+        database: &str,
+    ) -> Result<Vec<String>, UniDbError> {
+        let sender = self.connection_sender(connection_id).await?;
+        let (reply_sender, reply_receiver) = oneshot::channel();
+        sender
+            .send(Command::ListTables {
+                database: database.to_string(),
+                reply: reply_sender,
+            })
+            .await
+            .map_err(|_| connection_stopped_error())?;
+        reply_receiver
+            .await
+            .map_err(|_| connection_stopped_error())?
+    }
+
+    async fn connection_sender(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<mpsc::Sender<Command>, UniDbError> {
+        self.connections
+            .lock()
+            .await
+            .get(&connection_id)
+            .map(|handle| handle.sender.clone())
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "connection_not_open",
+                    ErrorCategory::ConnectionLost,
+                    "This connection is not open",
+                )
+            })
+    }
+
     /// Tests a profile without saving it or keeping the session open.
     pub async fn test_connection(
         &self,
@@ -415,9 +475,25 @@ impl ConnectionActor {
                         );
                     }
                 }
+                Command::ListDatabases { reply } => {
+                    let result = self.session.list_databases().await;
+                    let _ = reply.send(result);
+                }
+                Command::ListTables { database, reply } => {
+                    let result = self.session.list_tables(&database).await;
+                    let _ = reply.send(result);
+                }
                 Command::Shutdown => break,
             }
         }
         tracing::debug!(connection_id = %self.connection_id, "connection actor stopped");
     }
+}
+
+fn connection_stopped_error() -> UniDbError {
+    UniDbError::new(
+        "connection_actor_stopped",
+        ErrorCategory::ConnectionLost,
+        "The connection stopped unexpectedly",
+    )
 }

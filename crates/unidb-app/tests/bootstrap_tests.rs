@@ -168,3 +168,28 @@ async fn test_connection_reports_success_and_safe_failures() {
 
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn navigator_lists_databases_and_tables_for_an_open_connection() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+    service
+        .execute(profile.id, "CREATE TABLE users (id INTEGER)")
+        .await
+        .expect("create");
+
+    let databases = service.list_databases(profile.id).await.expect("databases");
+    assert_eq!(databases, vec!["main".to_string()]);
+    let tables = service
+        .list_tables(profile.id, "main")
+        .await
+        .expect("tables");
+    assert!(tables.contains(&"users".to_string()), "{tables:?}");
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
