@@ -288,7 +288,7 @@ fn validate(design: &TableDesign) -> Result<(), UniDbError> {
     Ok(())
 }
 
-fn validate_identifier(identifier: &str, kind: &str) -> Result<(), UniDbError> {
+pub(crate) fn validate_identifier(identifier: &str, kind: &str) -> Result<(), UniDbError> {
     let bytes = identifier.as_bytes();
     let valid = !bytes.is_empty()
         && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
@@ -310,6 +310,11 @@ fn invalid(message: impl Into<String>) -> UniDbError {
         ErrorCategory::Syntax,
         message.into(),
     )
+}
+
+/// Returns true when the identifier is a safe unquoted SQL identifier.
+pub fn valid_identifier(identifier: &str) -> bool {
+    validate_identifier(identifier, "identifier").is_ok()
 }
 
 #[cfg(test)]
