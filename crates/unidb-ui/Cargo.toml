@@ -9,11 +9,12 @@ description = "UniDB GTK4 and libadwaita interface"
 
 [features]
 default = []
-gui = ["dep:relm4", "dep:unidb-app", "dep:unidb-core", "dep:tokio", "dep:uuid", "dep:sourceview5"]
+gui = ["dep:relm4", "dep:unidb-app", "dep:unidb-core", "dep:tokio", "dep:uuid", "dep:sourceview5", "dep:serde_json"]
 
 [dependencies]
 relm4 = { workspace = true, optional = true }
 sourceview5 = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 unidb-app = { workspace = true, optional = true }
 unidb-core = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

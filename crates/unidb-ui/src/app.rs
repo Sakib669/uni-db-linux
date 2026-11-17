@@ -1,6 +1,7 @@
 //! The application shell: a libadwaita window with a sidebar, a Connections
-//! workflow, a Studio empty state, a Security page from live store state, and a
-//! startup diagnostic page. The dynamic parts are built in Rust.
+//! workflow, a history and saved queries page, settings, a Security page from
+//! live store state, and a startup diagnostic page. The dynamic parts are built
+//! in Rust.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -11,7 +12,10 @@ use relm4::{adw, gtk};
 use sourceview5::prelude::*;
 use uuid::Uuid;
 
-use unidb_app::{AppService, AuditEntry, CheckStatus, ImportOptions, ImportReport, SecurityReport};
+use unidb_app::{
+    AppService, AuditEntry, CheckStatus, HistoryEntry, ImportOptions, ImportReport, SavedQuery,
+    SecurityReport,
+};
 use unidb_core::{
     ColumnDesign, ConnectionProfile, Engine, SqlDialect, SslMode, TableColumnInfo, TableDesign,
     TransferFormat, alter_table_sql, create_table_sql,
@@ -64,8 +68,6 @@ struct AppModel {
     checks_rows: Vec<adw::ActionRow>,
     audit_group: adw::PreferencesGroup,
     audit_rows: Vec<adw::ActionRow>,
-    status_label: gtk::Label,
-    probe_button: gtk::Button,
     backup_button: gtk::Button,
     refresh_button: gtk::Button,
     diagnostic_page: adw::StatusPage,
@@ -131,12 +133,19 @@ struct AppModel {
     transfer_connection: Option<Uuid>,
     transfer_database: String,
     transfer_tables: Vec<String>,
+    history_search_entry: gtk::Entry,
+    history_status: gtk::Label,
+    history_list: gtk::ListBox,
+    saved_list: gtk::ListBox,
+    saved_name_entry: gtk::Entry,
+    history_entries: Vec<HistoryEntry>,
+    history_rows: Vec<gtk::ListBoxRow>,
+    saved_rows: Vec<gtk::ListBoxRow>,
+    settings_combo: adw::ComboRow,
+    settings_loaded: bool,
 }
 
 enum AppMsg {
-    Probe,
-    ProbeDone(String),
-    ProbeFailed(String),
     SelectSection(usize),
     Refresh,
     Backup,
@@ -195,14 +204,23 @@ enum AppMsg {
     TransferFailed(String),
     ExportQuery(TransferFormat),
     ExportReady(Uuid, TransferFormat, std::path::PathBuf, String),
+    LoadHistory,
+    HistoryLoaded(Box<Vec<HistoryEntry>>),
+    SavedQueriesLoaded(Box<Vec<SavedQuery>>),
+    SavedQuerySaved,
+    ClearHistoryRequested,
+    ClearHistoryConfirmed,
+    SaveCurrentQuery,
+    LoadSql(String),
+    DeleteSavedQuery(Uuid),
+    HistoryFailed(String),
+    SettingsLoaded(Option<String>),
+    SetColorScheme(u32),
 }
 
 impl std::fmt::Debug for AppMsg {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::Probe => "Probe",
-            Self::ProbeDone(_) => "ProbeDone",
-            Self::ProbeFailed(_) => "ProbeFailed",
             Self::SelectSection(_) => "SelectSection",
             Self::Refresh => "Refresh",
             Self::Backup => "Backup",
@@ -261,6 +279,18 @@ impl std::fmt::Debug for AppMsg {
             Self::TransferFailed(_) => "TransferFailed",
             Self::ExportQuery(_) => "ExportQuery",
             Self::ExportReady(_, _, _, _) => "ExportReady",
+            Self::LoadHistory => "LoadHistory",
+            Self::HistoryLoaded(_) => "HistoryLoaded",
+            Self::SavedQueriesLoaded(_) => "SavedQueriesLoaded",
+            Self::SavedQuerySaved => "SavedQuerySaved",
+            Self::ClearHistoryRequested => "ClearHistoryRequested",
+            Self::ClearHistoryConfirmed => "ClearHistoryConfirmed",
+            Self::SaveCurrentQuery => "SaveCurrentQuery",
+            Self::LoadSql(_) => "LoadSql",
+            Self::DeleteSavedQuery(_) => "DeleteSavedQuery",
+            Self::HistoryFailed(_) => "HistoryFailed",
+            Self::SettingsLoaded(_) => "SettingsLoaded",
+            Self::SetColorScheme(_) => "SetColorScheme",
         })
     }
 }
@@ -274,8 +304,6 @@ struct ShellWidgets {
     window_title: adw::WindowTitle,
     checks_group: adw::PreferencesGroup,
     audit_group: adw::PreferencesGroup,
-    status_label: gtk::Label,
-    probe_button: gtk::Button,
     backup_button: gtk::Button,
     refresh_button: gtk::Button,
     diagnostic_page: adw::StatusPage,
@@ -321,6 +349,12 @@ struct ShellWidgets {
     transfer_headers_check: gtk::CheckButton,
     transfer_path_entry: gtk::Entry,
     transfer_status: gtk::Label,
+    history_search_entry: gtk::Entry,
+    history_status: gtk::Label,
+    history_list: gtk::ListBox,
+    saved_list: gtk::ListBox,
+    saved_name_entry: gtk::Entry,
+    settings_combo: adw::ComboRow,
 }
 
 #[relm4::component]
@@ -371,8 +405,6 @@ impl SimpleComponent for AppModel {
             checks_rows: Vec::new(),
             audit_group: widgets.audit_group,
             audit_rows: Vec::new(),
-            status_label: widgets.status_label,
-            probe_button: widgets.probe_button,
             backup_button: widgets.backup_button,
             refresh_button: widgets.refresh_button,
             diagnostic_page: widgets.diagnostic_page,
@@ -438,6 +470,16 @@ impl SimpleComponent for AppModel {
             transfer_connection: None,
             transfer_database: "main".to_string(),
             transfer_tables: Vec::new(),
+            history_search_entry: widgets.history_search_entry,
+            history_status: widgets.history_status,
+            history_list: widgets.history_list,
+            saved_list: widgets.saved_list,
+            saved_name_entry: widgets.saved_name_entry,
+            history_entries: Vec::new(),
+            history_rows: Vec::new(),
+            saved_rows: Vec::new(),
+            settings_combo: widgets.settings_combo,
+            settings_loaded: false,
         };
 
         if let Some(error) = &model.error {
@@ -447,6 +489,7 @@ impl SimpleComponent for AppModel {
             model.select_section(0);
             model.load_connections(&sender);
             model.load_security(&sender);
+            model.load_color_scheme(&sender);
         }
         model.update_controls();
 
@@ -456,43 +499,6 @@ impl SimpleComponent for AppModel {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            AppMsg::Probe => {
-                if self.busy {
-                    return;
-                }
-                self.busy = true;
-                self.update_controls();
-                self.status_label.set_label("Running the SQLite probe...");
-                if let Some(service) = &self.service {
-                    let service = Arc::clone(service);
-                    let sender = sender.clone();
-                    self.handle.spawn(async move {
-                        match service.probe_sqlite().await {
-                            Ok(result) => {
-                                let version = result
-                                    .rows
-                                    .first()
-                                    .and_then(|row| row.first())
-                                    .map(unidb_app::value_text)
-                                    .unwrap_or_default();
-                                sender.input(AppMsg::ProbeDone(format!(
-                                    "SQLite {version} answered through the worker bridge in {} ms.",
-                                    result.elapsed_ms
-                                )));
-                            }
-                            Err(error) => sender.input(AppMsg::ProbeFailed(format!(
-                                "Probe failed: {}",
-                                error.user_message()
-                            ))),
-                        }
-                    });
-                }
-            }
-            AppMsg::ProbeDone(message) | AppMsg::ProbeFailed(message) => {
-                self.busy = false;
-                self.status_label.set_label(&message);
-                self.update_controls();
-            }
             AppMsg::SelectSection(index) => {
                 self.select_section(index);
                 if index == 1 {
@@ -507,7 +513,10 @@ impl SimpleComponent for AppModel {
                 if index == 4 {
                     self.refresh_transfer(&sender);
                 }
-                if index == 6 && !self.security_loaded {
+                if index == 5 {
+                    self.load_history(&sender);
+                }
+                if index == 7 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -1142,6 +1151,157 @@ impl SimpleComponent for AppModel {
                     },
                 );
             }
+            AppMsg::LoadHistory => self.load_history(&sender),
+            AppMsg::HistoryLoaded(entries) => {
+                self.history_entries = *entries;
+                self.populate_history(&sender);
+                self.history_status.set_label(&format!(
+                    "{} statement{}.",
+                    self.history_entries.len(),
+                    plural(self.history_entries.len())
+                ));
+            }
+            AppMsg::SavedQueriesLoaded(queries) => {
+                self.populate_saved(&queries, &sender);
+            }
+            AppMsg::ClearHistoryRequested => {
+                let dialog = adw::AlertDialog::builder()
+                    .heading("Clear the query history?")
+                    .body("Every recorded statement is deleted. Saved queries stay.")
+                    .build();
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("clear", "Clear history");
+                dialog.set_response_appearance("clear", adw::ResponseAppearance::Destructive);
+                let sender = sender.clone();
+                dialog.choose(
+                    relm4::main_application().active_window().as_ref(),
+                    None::<&gtk::gio::Cancellable>,
+                    move |response| {
+                        if response == "clear" {
+                            sender.input(AppMsg::ClearHistoryConfirmed);
+                        }
+                    },
+                );
+            }
+            AppMsg::ClearHistoryConfirmed => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.clear_history().await {
+                        Ok(count) => {
+                            sender.input(AppMsg::Toast(format!("Cleared {count} history rows.")));
+                            sender.input(AppMsg::LoadHistory);
+                        }
+                        Err(error) => sender.input(AppMsg::HistoryFailed(format!(
+                            "Could not clear history: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::SaveCurrentQuery => {
+                let name = self.saved_name_entry.text().trim().to_string();
+                if name.is_empty() {
+                    self.show_toast("Give the query a name first.");
+                    return;
+                }
+                let buffer = self.editor_view.buffer();
+                let sql = buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .to_string();
+                if sql.trim().is_empty() {
+                    self.show_toast("The editor is empty.");
+                    return;
+                }
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.save_saved_query(&name, &sql, None).await {
+                        Ok(_) => sender.input(AppMsg::SavedQuerySaved),
+                        Err(error) => sender.input(AppMsg::HistoryFailed(format!(
+                            "Could not save the query: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::SavedQuerySaved => {
+                self.saved_name_entry.set_text("");
+                self.show_toast("Query saved.");
+                self.load_history(&sender);
+            }
+            AppMsg::LoadSql(sql) => {
+                let buffer = self.editor_view.buffer();
+                buffer.set_text(&sql);
+                self.select_section(2);
+                self.show_toast("Loaded into the editor.");
+            }
+            AppMsg::DeleteSavedQuery(id) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.delete_saved_query(id).await {
+                        Ok(_) => {
+                            sender.input(AppMsg::Toast("Saved query deleted.".to_string()));
+                            sender.input(AppMsg::LoadHistory);
+                        }
+                        Err(error) => sender.input(AppMsg::HistoryFailed(format!(
+                            "Could not delete the query: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::HistoryFailed(message) => {
+                self.history_status.set_label(&message);
+                self.show_toast(&message);
+            }
+            AppMsg::SettingsLoaded(scheme) => {
+                let index = match scheme.as_deref() {
+                    Some("light") => 1,
+                    Some("dark") => 2,
+                    _ => 0,
+                };
+                self.settings_combo.set_selected(index);
+                self.apply_color_scheme(index);
+                self.settings_loaded = true;
+            }
+            AppMsg::SetColorScheme(index) => {
+                if !self.settings_loaded {
+                    return;
+                }
+                self.apply_color_scheme(index);
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let value = match index {
+                    1 => "light",
+                    2 => "dark",
+                    _ => "system",
+                };
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    if let Err(error) = service
+                        .set_setting("color_scheme", serde_json::json!(value))
+                        .await
+                    {
+                        sender.input(AppMsg::HistoryFailed(format!(
+                            "Could not save the setting: {}",
+                            error.user_message()
+                        )));
+                    }
+                });
+            }
             AppMsg::ExportReady(connection_id, format, path, sql) => {
                 let Some(service) = &self.service else {
                     return;
@@ -1187,7 +1347,8 @@ impl AppModel {
             2 => ("editor", "Editor"),
             3 => ("designer", "Designer"),
             4 => ("transfer", "Transfer"),
-            5 => ("studio", "Studio"),
+            5 => ("history", "History"),
+            6 => ("settings", "Settings"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -1202,7 +1363,6 @@ impl AppModel {
 
     fn update_controls(&self) {
         let ready = self.service.is_some();
-        self.probe_button.set_sensitive(ready && !self.busy);
         self.backup_button.set_sensitive(ready && !self.busy);
         self.refresh_button.set_sensitive(ready && !self.busy);
         self.save_button.set_sensitive(ready && !self.busy);
@@ -1916,6 +2076,174 @@ impl AppModel {
         });
     }
 
+    fn apply_color_scheme(&self, index: u32) {
+        let manager = adw::StyleManager::default();
+        let scheme = match index {
+            1 => adw::ColorScheme::ForceLight,
+            2 => adw::ColorScheme::ForceDark,
+            _ => adw::ColorScheme::Default,
+        };
+        manager.set_color_scheme(scheme);
+    }
+
+    fn load_color_scheme(&mut self, sender: &ComponentSender<Self>) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.handle.spawn(async move {
+            let scheme = service
+                .get_setting("color_scheme")
+                .await
+                .ok()
+                .flatten()
+                .and_then(|value| value.as_str().map(str::to_string));
+            sender.input(AppMsg::SettingsLoaded(scheme));
+        });
+    }
+
+    fn load_history(&mut self, sender: &ComponentSender<Self>) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        let query = self.history_search_entry.text().to_string();
+        let history_service = Arc::clone(service);
+        let history_sender = sender.clone();
+        self.handle.spawn(async move {
+            match history_service.search_history(&query, 100).await {
+                Ok(entries) => history_sender.input(AppMsg::HistoryLoaded(Box::new(entries))),
+                Err(error) => history_sender.input(AppMsg::HistoryFailed(format!(
+                    "Could not read history: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+        let saved_service = Arc::clone(service);
+        let saved_sender = sender.clone();
+        self.handle.spawn(async move {
+            match saved_service.list_saved_queries().await {
+                Ok(queries) => saved_sender.input(AppMsg::SavedQueriesLoaded(Box::new(queries))),
+                Err(error) => saved_sender.input(AppMsg::HistoryFailed(format!(
+                    "Could not read saved queries: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
+    fn populate_history(&mut self, sender: &ComponentSender<Self>) {
+        for row in self.history_rows.drain(..) {
+            self.history_list.remove(&row);
+        }
+        if self.history_entries.is_empty() {
+            let row = plain_row(
+                "No statements recorded yet",
+                "document-open-recent-symbolic",
+            );
+            self.history_list.append(&row);
+            self.history_rows.push(row);
+            return;
+        }
+        let entries = self.history_entries.clone();
+        for entry in entries {
+            let preview = entry
+                .sql
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(110)
+                .collect::<String>();
+            let row = gtk::ListBoxRow::new();
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            content.set_margin_top(8);
+            content.set_margin_bottom(8);
+            content.set_margin_start(10);
+            content.set_margin_end(10);
+            content.append(&gtk::Image::from_icon_name("document-open-recent-symbolic"));
+            let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            text_box.set_hexpand(true);
+            let title = gtk::Label::new(Some(&preview));
+            title.set_xalign(0.0);
+            title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let subtitle = gtk::Label::new(Some(&format!(
+                "{}  |  {}  |  {} rows  |  {} ms",
+                entry.started_at,
+                entry.status,
+                entry.row_count.unwrap_or(0),
+                entry.duration_ms
+            )));
+            subtitle.set_xalign(0.0);
+            subtitle.add_css_class("unidb-muted");
+            text_box.append(&title);
+            text_box.append(&subtitle);
+            content.append(&text_box);
+            row.set_child(Some(&content));
+            row.set_tooltip_text(Some(&entry.sql));
+            let sql = entry.sql.clone();
+            let sender = sender.clone();
+            row.connect_activate(move |_| sender.input(AppMsg::LoadSql(sql.clone())));
+            self.history_list.append(&row);
+            self.history_rows.push(row);
+        }
+    }
+
+    fn populate_saved(&mut self, queries: &[SavedQuery], sender: &ComponentSender<Self>) {
+        for row in self.saved_rows.drain(..) {
+            self.saved_list.remove(&row);
+        }
+        if queries.is_empty() {
+            let row = plain_row("No saved queries yet", "document-save-symbolic");
+            self.saved_list.append(&row);
+            self.saved_rows.push(row);
+            return;
+        }
+        for query in queries {
+            let preview = query
+                .sql
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect::<String>();
+            let row = gtk::ListBoxRow::new();
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            content.set_margin_top(8);
+            content.set_margin_bottom(8);
+            content.set_margin_start(10);
+            content.set_margin_end(10);
+            content.append(&gtk::Image::from_icon_name("document-save-symbolic"));
+            let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            text_box.set_hexpand(true);
+            let title = gtk::Label::new(Some(&query.name));
+            title.set_xalign(0.0);
+            let subtitle = gtk::Label::new(Some(&preview));
+            subtitle.set_xalign(0.0);
+            subtitle.add_css_class("unidb-muted");
+            text_box.append(&title);
+            text_box.append(&subtitle);
+            content.append(&text_box);
+            let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
+            delete_button.set_tooltip_text(Some("Delete saved query"));
+            delete_button.add_css_class("flat");
+            let id = query.id;
+            {
+                let sender = sender.clone();
+                delete_button.connect_clicked(move |_| sender.input(AppMsg::DeleteSavedQuery(id)));
+            }
+            content.append(&delete_button);
+            row.set_child(Some(&content));
+            row.set_tooltip_text(Some(&query.sql));
+            let sql = query.sql.clone();
+            let sender = sender.clone();
+            row.connect_activate(move |_| sender.input(AppMsg::LoadSql(sql.clone())));
+            self.saved_list.append(&row);
+            self.saved_rows.push(row);
+        }
+    }
+
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
         let Some(service) = &self.service else {
             return;
@@ -2623,27 +2951,113 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     navigator_stack.add_named(&navigator_browse, Some("browse"));
     navigator_stack.set_visible_child_name("empty");
 
-    let status_label = gtk::Label::builder()
-        .label("Ready.")
-        .xalign(0.0)
-        .wrap(true)
+    // History page.
+    let history_search_entry = gtk::Entry::builder()
+        .placeholder_text("Search history")
+        .hexpand(true)
         .build();
-    let probe_button = gtk::Button::with_label("Run SQLite probe");
-    probe_button.add_css_class("suggested-action");
     {
         let sender = sender.clone();
-        probe_button.connect_clicked(move |_| sender.input(AppMsg::Probe));
+        history_search_entry.connect_activate(move |_| sender.input(AppMsg::LoadHistory));
     }
-    let studio_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    studio_box.append(&status_label);
-    studio_box.append(&probe_button);
-    let studio_page = adw::StatusPage::builder()
-        .icon_name("utilities-terminal-symbolic")
-        .title("Studio ready")
-        .description(
-            "The query editor arrives in the next features. Use Connections to add a database first.",
+    let history_search_button = gtk::Button::with_label("Search");
+    {
+        let sender = sender.clone();
+        history_search_button.connect_clicked(move |_| sender.input(AppMsg::LoadHistory));
+    }
+    let clear_history_button = gtk::Button::with_label("Clear history");
+    clear_history_button.add_css_class("destructive-action");
+    {
+        let sender = sender.clone();
+        clear_history_button.connect_clicked(move |_| sender.input(AppMsg::ClearHistoryRequested));
+    }
+    let history_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    history_toolbar.set_margin_all(10);
+    history_toolbar.append(&history_search_entry);
+    history_toolbar.append(&history_search_button);
+    history_toolbar.append(&clear_history_button);
+    let history_status = gtk::Label::builder()
+        .label("No history loaded.")
+        .xalign(0.0)
+        .wrap(true)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    history_status.add_css_class("unidb-muted");
+    let history_list = gtk::ListBox::new();
+    history_list.set_selection_mode(gtk::SelectionMode::None);
+    history_list.add_css_class("boxed-list");
+    let history_group = adw::PreferencesGroup::builder()
+        .title("Recent statements")
+        .build();
+    history_group.add(&history_list);
+    let saved_name_entry = gtk::Entry::builder()
+        .placeholder_text("Name for the current statement")
+        .hexpand(true)
+        .build();
+    let save_query_button = gtk::Button::with_label("Save current SQL");
+    save_query_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        save_query_button.connect_clicked(move |_| sender.input(AppMsg::SaveCurrentQuery));
+    }
+    let saved_row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    saved_row_box.append(&saved_name_entry);
+    saved_row_box.append(&save_query_button);
+    let saved_list = gtk::ListBox::new();
+    saved_list.set_selection_mode(gtk::SelectionMode::None);
+    saved_list.add_css_class("boxed-list");
+    let saved_group = adw::PreferencesGroup::builder()
+        .title("Saved queries")
+        .build();
+    saved_group.add(&saved_row_box);
+    saved_group.add(&saved_list);
+    let history_page = adw::PreferencesPage::new();
+    history_page.add(&history_group);
+    history_page.add(&saved_group);
+    let history_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&history_page)
+        .build();
+    let history_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    history_box.append(&history_toolbar);
+    history_box.append(&history_status);
+    history_box.append(&history_scroll);
+
+    // Settings page.
+    let settings_combo = adw::ComboRow::builder()
+        .title("Color scheme")
+        .subtitle("Applies to the whole application")
+        .model(&gtk::StringList::new(&["System", "Light", "Dark"]))
+        .build();
+    {
+        let sender = sender.clone();
+        settings_combo.connect_selected_notify(move |combo| {
+            sender.input(AppMsg::SetColorScheme(combo.selected()));
+        });
+    }
+    let appearance_group = adw::PreferencesGroup::builder().title("Appearance").build();
+    appearance_group.add(&settings_combo);
+    let about_group = adw::PreferencesGroup::builder().title("About").build();
+    let version_row = adw::ActionRow::builder()
+        .title("UniDB")
+        .subtitle(format!("Version {}", env!("CARGO_PKG_VERSION")))
+        .build();
+    about_group.add(&version_row);
+    let engine_row = adw::ActionRow::builder()
+        .title("Engines")
+        .subtitle(
+            "SQLite, PostgreSQL, CockroachDB, MySQL, MariaDB, Redis, MongoDB, Cassandra, MSSQL",
         )
-        .child(&studio_box)
+        .build();
+    about_group.add(&engine_row);
+    let settings_page = adw::PreferencesPage::new();
+    settings_page.add(&appearance_group);
+    settings_page.add(&about_group);
+    let settings_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&settings_page)
         .build();
 
     let checks_group = adw::PreferencesGroup::builder()
@@ -2667,7 +3081,8 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.add_named(&editor_page, Some("editor"));
     page_stack.add_named(&designer_stack, Some("designer"));
     page_stack.add_named(&transfer_stack, Some("transfer"));
-    page_stack.add_named(&studio_page, Some("studio"));
+    page_stack.add_named(&history_box, Some("history"));
+    page_stack.add_named(&settings_scroll, Some("settings"));
     page_stack.add_named(&security_scroll, Some("security"));
 
     let content_page = adw::NavigationPage::new(&page_stack, "Connections");
@@ -2680,7 +3095,8 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         ("utilities-terminal-symbolic", "Editor"),
         ("x-office-spreadsheet-symbolic", "Designer"),
         ("document-send-symbolic", "Transfer"),
-        ("utilities-terminal-symbolic", "Studio"),
+        ("document-open-recent-symbolic", "History"),
+        ("emblem-system-symbolic", "Settings"),
         ("security-high-symbolic", "Security"),
     ] {
         let row = gtk::ListBoxRow::new();
@@ -2755,8 +3171,6 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         window_title,
         checks_group,
         audit_group,
-        status_label,
-        probe_button,
         backup_button,
         refresh_button,
         diagnostic_page,
@@ -2802,6 +3216,12 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         transfer_headers_check,
         transfer_path_entry,
         transfer_status,
+        history_search_entry,
+        history_status,
+        history_list,
+        saved_list,
+        saved_name_entry,
+        settings_combo,
     }
 }
 
