@@ -9,6 +9,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 1 | Stack and architecture | in-progress | [0001](../specs/0001-native-gtk4-desktop-architecture/index.md) |
 | 2 | Engine layer | in-progress | [0002](../specs/0002-engine-layer.md) |
 | 3 | App store and security screens | in-progress | [0003](../specs/0003-app-store-security.md) |
+| 4 | Design system and app shell | in-progress | [0004](../specs/0004-design-system-shell.md) |
 
 ## Features
 
@@ -56,6 +57,21 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - [x] Interface: Studio, Security, and startup diagnostic pages verified with container screenshots in `docs/evidence/`
 - [ ] Verify it: /check verify App store and security screens
 - [ ] Test it: /test App store and security screens
+
+### 4. Design system and app shell
+
+**Intent**: Give the app one real shell and one design language. A libadwaita navigation split view with a sidebar, a header bar, grouped preference lists, empty states, toast feedback, and an accent mapped onto libadwaita named colors so every later screen plugs into the same structure.
+
+**Done when**: the app window is a libadwaita shell with working sidebar navigation, the Security page reads as grouped rows, the Studio page shows a proper empty state, the startup failure page uses a status page, actions report through toasts, and the three states are captured as screenshots.
+
+- [x] Decide the design system and app shell (spec): [0004](../specs/0004-design-system-shell.md)
+- [ ] Build it: /develop Design system and app shell
+  - [x] Embedded stylesheet with teal accent and utility classes (light and dark safe)
+  - [x] Libadwaita shell: header bar, menu, refresh and backup actions, sidebar navigation split view
+  - [x] Studio empty state, Security preference groups with status rows and audit rows, startup status page
+  - [x] Screenshots in `docs/evidence/` for studio, security, and startup failure
+- [ ] Verify it: /check verify Design system and app shell
+- [ ] Test it: /test Design system and app shell
 
 ## Deferred
 
