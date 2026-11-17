@@ -7,6 +7,8 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    adwaita-icon-theme \
+    fonts-cantarell \
     build-essential \
     ca-certificates \
     curl \
@@ -15,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-4-dev \
     libadwaita-1-dev \
     libgtksourceview-5-dev \
+    librsvg2-common \
     libsecret-1-dev \
     xvfb \
     xdotool \

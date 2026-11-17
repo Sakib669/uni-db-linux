@@ -31,12 +31,12 @@ docker run --rm \
             eval \$(xdotool getwindowgeometry --shell \$WINDOW)
             echo \"window: \$WINDOW at \$X,\$Y size \${WIDTH}x\${HEIGHT}\"
             sleep 2
-            xdotool mousemove \$((X + 52)) \$((Y + 41))
+            xdotool mousemove \$((X + 100)) \$((Y + 74))
             sleep 0.3
             xdotool click 1
             sleep 1
             import -window root /app/target/studio-page.png
-            xdotool mousemove \$((X + 167)) \$((Y + 41))
+            xdotool mousemove \$((X + 100)) \$((Y + 114))
             sleep 0.3
             xdotool click 1
             sleep 1
