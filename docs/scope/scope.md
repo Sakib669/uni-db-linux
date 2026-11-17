@@ -14,6 +14,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 6 | SQL editor and result grid | in-progress | [0006](../specs/0006-sql-editor.md) |
 | 7 | Table designer | in-progress | [0007](../specs/0007-table-designer.md) |
 | 8 | Import and export | in-progress | [0008](../specs/0008-import-export.md) |
+| 9 | History, saved queries, and settings | in-progress | [0009](../specs/0009-history-saved-queries-settings.md) |
 
 ## Features
 
@@ -148,6 +149,25 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [ ] Follow up: streaming imports with progress and cancel, interactive column mapping, update and upsert, Excel and Parquet
 - [ ] Verify it: /check verify Import and export
 - [ ] Test it: /test Import and export
+
+### 9. History, saved queries, and settings
+
+**Intent**: Make the records the app already keeps usable. History with FTS5 search, loading a statement back into the editor, and clearing with confirmation. Named saved queries with load and delete. A settings surface with a persisted color scheme applied immediately through the libadwaita style manager.
+
+**Done when**: a user finds a past statement, loads it into the editor, saves a statement under a name and loads it later, clears history after confirmation, and chooses a color scheme that survives a restart.
+
+- [x] Decide history, saved queries, and settings (spec): [0009](../specs/0009-history-saved-queries-settings.md)
+- [x] Build it: /develop History, saved queries, and settings
+  - [x] Saved query store model, save, list, delete, and history clearing
+  - [x] Service wrappers for history search, saved queries, clearing, and settings
+  - [x] History page with search, newest first rows, load into editor, and confirmed clear
+  - [x] Saved queries group with name, save current SQL, activation to load, and delete
+  - [x] Settings page with System, Light, and Dark color schemes, startup restore, and immediate apply
+  - [x] Studio placeholder and probe surface removed from the shell
+  - [x] Verified history, saved query, and dark scheme through container screenshots
+- [ ] Follow up: history retention setting, folders and tags, snippets, editor preferences
+- [ ] Verify it: /check verify History, saved queries, and settings
+- [ ] Test it: /test History, saved queries, and settings
 
 ## Deferred
 
