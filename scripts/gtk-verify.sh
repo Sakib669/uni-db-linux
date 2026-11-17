@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Verifies the native window headlessly: starts Xvfb, launches UniDB, finds the
-# window, activates it, presses Tab to focus the probe button, presses Return,
-# waits for the worker result, and saves a screenshot.
+# Verifies the native window headlessly: starts Xvfb and Openbox, launches
+# UniDB, focuses the window, activates the SQLite probe button, waits for the
+# worker result, and saves a screenshot. The image provides every tool used.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,10 +15,12 @@ docker run --rm \
     bash -lc '
         set -e
         xvfb-run -a -s "-screen 0 1200x800x24" bash -c "
+            openbox >/dev/null 2>&1 &
+            sleep 0.5
             ./target/debug/unidb &
             APP_PID=\$!
             for i in \$(seq 1 30); do
-                WINDOW=\$(xdotool search --name UniDB 2>/dev/null | head -1 || true)
+                WINDOW=\$(xdotool search --onlyvisible --name UniDB 2>/dev/null | head -1 || true)
                 [ -n \"\$WINDOW\" ] && break
                 sleep 0.3
             done
@@ -29,9 +31,10 @@ docker run --rm \
             fi
             echo \"window: \$WINDOW\"
             xdotool windowactivate --sync \$WINDOW
-            xdotool key --window \$WINDOW Tab
-            sleep 0.5
-            xdotool key --window \$WINDOW Return
+            sleep 0.3
+            xdotool key --clearmodifiers Tab
+            sleep 0.3
+            xdotool key --clearmodifiers Return
             sleep 2
             import -window root /app/target/unidb-probe.png
             kill \$APP_PID 2>/dev/null || true
