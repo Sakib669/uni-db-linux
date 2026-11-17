@@ -11,10 +11,10 @@ use relm4::{adw, gtk};
 use sourceview5::prelude::*;
 use uuid::Uuid;
 
-use unidb_app::{AppService, AuditEntry, CheckStatus, SecurityReport};
+use unidb_app::{AppService, AuditEntry, CheckStatus, ImportOptions, ImportReport, SecurityReport};
 use unidb_core::{
     ColumnDesign, ConnectionProfile, Engine, SqlDialect, SslMode, TableColumnInfo, TableDesign,
-    alter_table_sql, create_table_sql,
+    TransferFormat, alter_table_sql, create_table_sql,
 };
 
 const ABOUT_NAME: &str = "UniDB";
@@ -120,6 +120,17 @@ struct AppModel {
     designer_columns: Vec<ColumnDesign>,
     designer_widgets: Vec<ColumnWidgets>,
     designer_statements: Vec<String>,
+    transfer_stack: gtk::Stack,
+    transfer_conn_dropdown: gtk::DropDown,
+    transfer_table_dropdown: gtk::DropDown,
+    transfer_format_dropdown: gtk::DropDown,
+    transfer_headers_check: gtk::CheckButton,
+    transfer_path_entry: gtk::Entry,
+    transfer_status: gtk::Label,
+    transfer_ids: Vec<Uuid>,
+    transfer_connection: Option<Uuid>,
+    transfer_database: String,
+    transfer_tables: Vec<String>,
 }
 
 enum AppMsg {
@@ -174,6 +185,16 @@ enum AppMsg {
     DesignerApply,
     DesignerApplied(usize),
     DesignerFailed(String),
+    TransferConnectionSelected(u32),
+    TransferTables(Box<Vec<String>>),
+    TransferTableSelected(u32),
+    TransferPathChanged(String),
+    TransferBrowse,
+    TransferImport,
+    TransferFinished(Box<ImportReport>),
+    TransferFailed(String),
+    ExportQuery(TransferFormat),
+    ExportReady(Uuid, TransferFormat, std::path::PathBuf, String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -230,6 +251,16 @@ impl std::fmt::Debug for AppMsg {
             Self::DesignerApply => "DesignerApply",
             Self::DesignerApplied(_) => "DesignerApplied",
             Self::DesignerFailed(_) => "DesignerFailed",
+            Self::TransferConnectionSelected(_) => "TransferConnectionSelected",
+            Self::TransferTables(_) => "TransferTables",
+            Self::TransferTableSelected(_) => "TransferTableSelected",
+            Self::TransferPathChanged(_) => "TransferPathChanged",
+            Self::TransferBrowse => "TransferBrowse",
+            Self::TransferImport => "TransferImport",
+            Self::TransferFinished(_) => "TransferFinished",
+            Self::TransferFailed(_) => "TransferFailed",
+            Self::ExportQuery(_) => "ExportQuery",
+            Self::ExportReady(_, _, _, _) => "ExportReady",
         })
     }
 }
@@ -283,6 +314,13 @@ struct ShellWidgets {
     designer_columns_box: gtk::Box,
     designer_preview_buffer: sourceview5::Buffer,
     designer_status: gtk::Label,
+    transfer_stack: gtk::Stack,
+    transfer_conn_dropdown: gtk::DropDown,
+    transfer_table_dropdown: gtk::DropDown,
+    transfer_format_dropdown: gtk::DropDown,
+    transfer_headers_check: gtk::CheckButton,
+    transfer_path_entry: gtk::Entry,
+    transfer_status: gtk::Label,
 }
 
 #[relm4::component]
@@ -389,6 +427,17 @@ impl SimpleComponent for AppModel {
             designer_columns: Vec::new(),
             designer_widgets: Vec::new(),
             designer_statements: Vec::new(),
+            transfer_stack: widgets.transfer_stack,
+            transfer_conn_dropdown: widgets.transfer_conn_dropdown,
+            transfer_table_dropdown: widgets.transfer_table_dropdown,
+            transfer_format_dropdown: widgets.transfer_format_dropdown,
+            transfer_headers_check: widgets.transfer_headers_check,
+            transfer_path_entry: widgets.transfer_path_entry,
+            transfer_status: widgets.transfer_status,
+            transfer_ids: Vec::new(),
+            transfer_connection: None,
+            transfer_database: "main".to_string(),
+            transfer_tables: Vec::new(),
         };
 
         if let Some(error) = &model.error {
@@ -455,7 +504,10 @@ impl SimpleComponent for AppModel {
                 if index == 3 {
                     self.refresh_designer(&sender);
                 }
-                if index == 5 && !self.security_loaded {
+                if index == 4 {
+                    self.refresh_transfer(&sender);
+                }
+                if index == 6 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -694,6 +746,7 @@ impl SimpleComponent for AppModel {
                 self.refresh_navigator_connections(&sender);
                 self.refresh_editor_connections(&sender);
                 self.refresh_designer(&sender);
+                self.refresh_transfer(&sender);
             }
             AppMsg::ConnectionFailed(message) => {
                 self.busy = false;
@@ -948,6 +1001,170 @@ impl SimpleComponent for AppModel {
                 self.designer_status.set_label(&message);
                 self.show_toast(&message);
             }
+            AppMsg::TransferConnectionSelected(index) => {
+                if let Some(id) = self.transfer_ids.get(index as usize).copied() {
+                    self.transfer_connection = Some(id);
+                    self.transfer_database = self.designer_database_for(id);
+                    self.load_transfer_tables(&sender);
+                }
+            }
+            AppMsg::TransferTables(tables) => {
+                self.transfer_tables = *tables;
+                let refs: Vec<&str> = self.transfer_tables.iter().map(String::as_str).collect();
+                let model = gtk::StringList::new(&refs);
+                self.transfer_table_dropdown.set_model(Some(&model));
+                self.transfer_table_dropdown.set_selected(0);
+            }
+            AppMsg::TransferTableSelected(index) => {
+                if let Some(table) = self.transfer_tables.get(index as usize) {
+                    self.transfer_status
+                        .set_label(&format!("Ready to import into {table}."));
+                }
+            }
+            AppMsg::TransferPathChanged(path) => self.transfer_path_entry.set_text(&path),
+            AppMsg::TransferBrowse => {
+                let dialog = gtk::FileDialog::builder()
+                    .title("Choose a file to import")
+                    .build();
+                let sender = sender.clone();
+                dialog.open(
+                    relm4::main_application().active_window().as_ref(),
+                    None::<&gtk::gio::Cancellable>,
+                    move |result| {
+                        if let Ok(file) = result
+                            && let Some(path) = file.path()
+                        {
+                            sender.input(AppMsg::TransferPathChanged(path.display().to_string()));
+                        }
+                    },
+                );
+            }
+            AppMsg::TransferImport => {
+                let Some(connection_id) = self.transfer_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let Some(table) = self
+                    .transfer_tables
+                    .get(self.transfer_table_dropdown.selected() as usize)
+                    .cloned()
+                else {
+                    self.show_toast("Choose a table first.");
+                    return;
+                };
+                let path = self.transfer_path_entry.text().to_string();
+                if path.trim().is_empty() {
+                    self.show_toast("Choose a CSV or JSON file first.");
+                    return;
+                }
+                let format = match self.transfer_format_dropdown.selected() {
+                    1 => TransferFormat::Json,
+                    _ => TransferFormat::Csv,
+                };
+                let options = ImportOptions {
+                    database: self.transfer_database.clone(),
+                    table,
+                    path: std::path::PathBuf::from(path),
+                    format,
+                    has_headers: self.transfer_headers_check.is_active(),
+                    delimiter: b',',
+                    null_marker: None,
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.transfer_status.set_label("Importing...");
+                self.handle.spawn(async move {
+                    match service.import_file(connection_id, &options).await {
+                        Ok(report) => sender.input(AppMsg::TransferFinished(Box::new(report))),
+                        Err(error) => sender.input(AppMsg::TransferFailed(format!(
+                            "Import failed: {} ({})",
+                            error.user_message(),
+                            error.code()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::TransferFinished(report) => {
+                let mut text = format!(
+                    "Imported {} of {} rows ({} rejected, {} batch{}).",
+                    report.rows_inserted,
+                    report.rows_read,
+                    report.rows_rejected,
+                    report.batches,
+                    plural(report.batches)
+                );
+                if let Some(warning) = report.warnings.first() {
+                    text.push_str(&format!(" {warning}"));
+                }
+                self.transfer_status.set_label(&text);
+                self.show_toast(&text);
+            }
+            AppMsg::TransferFailed(message) => {
+                self.transfer_status.set_label(&message);
+                self.show_toast(&message);
+            }
+            AppMsg::ExportQuery(format) => {
+                let Some(connection_id) = self.editor_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let buffer = self.editor_view.buffer();
+                let sql = buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .to_string();
+                if sql.trim().is_empty() {
+                    self.show_toast("Write a statement first.");
+                    return;
+                }
+                let dialog = gtk::FileDialog::builder()
+                    .title("Export result")
+                    .initial_name(match format {
+                        TransferFormat::Csv => "result.csv",
+                        TransferFormat::Json => "result.json",
+                    })
+                    .build();
+                let sender = sender.clone();
+                dialog.save(
+                    relm4::main_application().active_window().as_ref(),
+                    None::<&gtk::gio::Cancellable>,
+                    move |result| {
+                        let Ok(file) = result else { return };
+                        let Some(path) = file.path() else { return };
+                        sender.input(AppMsg::ExportReady(
+                            connection_id,
+                            format,
+                            path,
+                            sql.clone(),
+                        ));
+                    },
+                );
+            }
+            AppMsg::ExportReady(connection_id, format, path, sql) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service
+                        .export_query(connection_id, &sql, format, &path)
+                        .await
+                    {
+                        Ok(report) => sender.input(AppMsg::Toast(format!(
+                            "Exported {} rows to {}",
+                            report.rows,
+                            report.path.display()
+                        ))),
+                        Err(error) => sender.input(AppMsg::Toast(format!(
+                            "Export failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
         }
     }
 }
@@ -969,7 +1186,8 @@ impl AppModel {
             1 => ("navigator", "Navigator"),
             2 => ("editor", "Editor"),
             3 => ("designer", "Designer"),
-            4 => ("studio", "Studio"),
+            4 => ("transfer", "Transfer"),
+            5 => ("studio", "Studio"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -1645,6 +1863,59 @@ impl AppModel {
         Ok(statements)
     }
 
+    fn refresh_transfer(&mut self, sender: &ComponentSender<Self>) {
+        let live: Vec<ConnectionProfile> = self
+            .connections
+            .iter()
+            .filter(|profile| self.connected.contains(&profile.id))
+            .cloned()
+            .collect();
+        self.transfer_ids = live.iter().map(|profile| profile.id).collect();
+        let names: Vec<&str> = live.iter().map(|profile| profile.name.as_str()).collect();
+        let model = gtk::StringList::new(&names);
+        self.transfer_conn_dropdown.set_model(Some(&model));
+        if live.is_empty() {
+            self.transfer_connection = None;
+            self.transfer_stack.set_visible_child_name("empty");
+            return;
+        }
+        self.transfer_stack.set_visible_child_name("form");
+        let current = self
+            .transfer_connection
+            .filter(|id| self.transfer_ids.contains(id))
+            .unwrap_or(self.transfer_ids[0]);
+        self.transfer_connection = Some(current);
+        self.transfer_database = self.designer_database_for(current);
+        let index = self
+            .transfer_ids
+            .iter()
+            .position(|id| *id == current)
+            .unwrap_or(0);
+        self.transfer_conn_dropdown.set_selected(index as u32);
+        self.load_transfer_tables(sender);
+    }
+
+    fn load_transfer_tables(&mut self, sender: &ComponentSender<Self>) {
+        let Some(id) = self.transfer_connection else {
+            return;
+        };
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        let database = self.transfer_database.clone();
+        self.handle.spawn(async move {
+            match service.list_tables(id, &database).await {
+                Ok(tables) => sender.input(AppMsg::TransferTables(Box::new(tables))),
+                Err(error) => sender.input(AppMsg::TransferFailed(format!(
+                    "Could not list tables: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
         let Some(service) = &self.service else {
             return;
@@ -1959,6 +2230,90 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     connections_stack.add_named(&list_page_content, Some("list"));
     connections_stack.add_named(&form_page_content, Some("form"));
 
+    // Transfer page.
+    let transfer_status = gtk::Label::builder()
+        .label("Choose a connection, table, and file.")
+        .xalign(0.0)
+        .wrap(true)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(10)
+        .margin_end(10)
+        .build();
+    let transfer_conn_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    transfer_conn_dropdown.set_hexpand(true);
+    {
+        let sender = sender.clone();
+        transfer_conn_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::TransferConnectionSelected(dropdown.selected()));
+        });
+    }
+    let transfer_table_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    {
+        let sender = sender.clone();
+        transfer_table_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::TransferTableSelected(dropdown.selected()));
+        });
+    }
+    let transfer_format_dropdown = gtk::DropDown::new(
+        Some(gtk::StringList::new(&["CSV", "JSON"])),
+        None::<gtk::Expression>,
+    );
+    let transfer_headers_check = gtk::CheckButton::with_label("First row is a header");
+    transfer_headers_check.set_active(true);
+    let transfer_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    transfer_toolbar.set_margin_all(10);
+    transfer_toolbar.append(&transfer_conn_dropdown);
+    transfer_toolbar.append(&transfer_table_dropdown);
+    transfer_toolbar.append(&transfer_format_dropdown);
+    transfer_toolbar.append(&transfer_headers_check);
+    let transfer_path_entry = gtk::Entry::builder()
+        .placeholder_text("Path to a CSV or JSON file")
+        .hexpand(true)
+        .build();
+    let transfer_browse_button = gtk::Button::with_label("Browse");
+    {
+        let sender = sender.clone();
+        transfer_browse_button.connect_clicked(move |_| sender.input(AppMsg::TransferBrowse));
+    }
+    let transfer_import_button = gtk::Button::with_label("Import");
+    transfer_import_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        transfer_import_button.connect_clicked(move |_| sender.input(AppMsg::TransferImport));
+    }
+    let transfer_path_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    transfer_path_row.set_margin_start(10);
+    transfer_path_row.set_margin_end(10);
+    transfer_path_row.append(&transfer_path_entry);
+    transfer_path_row.append(&transfer_browse_button);
+    transfer_path_row.append(&transfer_import_button);
+    let transfer_hint = gtk::Label::builder()
+        .label("Rows are coerced to the table column types and inserted in transactional batches.")
+        .xalign(0.0)
+        .wrap(true)
+        .margin_start(10)
+        .margin_top(8)
+        .build();
+    transfer_hint.add_css_class("unidb-muted");
+    let transfer_form = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    transfer_form.append(&transfer_toolbar);
+    transfer_form.append(&transfer_path_row);
+    transfer_form.append(&transfer_hint);
+    transfer_form.append(&transfer_status);
+    let transfer_empty = adw::StatusPage::builder()
+        .icon_name("document-send-symbolic")
+        .title("No live connection")
+        .description("Connect to a database in Connections, then import a file here.")
+        .build();
+    let transfer_stack = gtk::Stack::new();
+    transfer_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    transfer_stack.add_named(&transfer_empty, Some("empty"));
+    transfer_stack.add_named(&transfer_form, Some("form"));
+    transfer_stack.set_visible_child_name("empty");
+
     // Designer page.
     let designer_status = gtk::Label::builder()
         .label("Connect to a database first.")
@@ -2202,12 +2557,26 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         let sender = sender.clone();
         clear_button.connect_clicked(move |_| sender.input(AppMsg::ClearResults));
     }
+    let export_csv_button = gtk::Button::with_label("Export CSV");
+    {
+        let sender = sender.clone();
+        export_csv_button
+            .connect_clicked(move |_| sender.input(AppMsg::ExportQuery(TransferFormat::Csv)));
+    }
+    let export_json_button = gtk::Button::with_label("Export JSON");
+    {
+        let sender = sender.clone();
+        export_json_button
+            .connect_clicked(move |_| sender.input(AppMsg::ExportQuery(TransferFormat::Json)));
+    }
     let editor_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     editor_toolbar.set_margin_all(10);
     editor_toolbar.append(&editor_dropdown);
     editor_toolbar.append(&run_button);
     editor_toolbar.append(&cancel_button);
     editor_toolbar.append(&clear_button);
+    editor_toolbar.append(&export_csv_button);
+    editor_toolbar.append(&export_json_button);
     let editor_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
     editor_page.append(&editor_toolbar);
     editor_page.append(&editor_paned);
@@ -2297,6 +2666,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.add_named(&navigator_stack, Some("navigator"));
     page_stack.add_named(&editor_page, Some("editor"));
     page_stack.add_named(&designer_stack, Some("designer"));
+    page_stack.add_named(&transfer_stack, Some("transfer"));
     page_stack.add_named(&studio_page, Some("studio"));
     page_stack.add_named(&security_scroll, Some("security"));
 
@@ -2309,6 +2679,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         ("view-list-symbolic", "Navigator"),
         ("utilities-terminal-symbolic", "Editor"),
         ("x-office-spreadsheet-symbolic", "Designer"),
+        ("document-send-symbolic", "Transfer"),
         ("utilities-terminal-symbolic", "Studio"),
         ("security-high-symbolic", "Security"),
     ] {
@@ -2424,6 +2795,13 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         designer_columns_box,
         designer_preview_buffer,
         designer_status,
+        transfer_stack,
+        transfer_conn_dropdown,
+        transfer_table_dropdown,
+        transfer_format_dropdown,
+        transfer_headers_check,
+        transfer_path_entry,
+        transfer_status,
     }
 }
 
