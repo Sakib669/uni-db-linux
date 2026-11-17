@@ -16,6 +16,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 8 | Import and export | in-progress | [0008](../specs/0008-import-export.md) |
 | 9 | History, saved queries, and settings | in-progress | [0009](../specs/0009-history-saved-queries-settings.md) |
 | 10 | Packaging, signing, updates, and release automation | in-progress | [0010](../specs/0010-packaging-updates.md) |
+| 11 | Visual features | in-progress | [0011](../specs/0011-visual-features.md) |
 
 ## Features
 
@@ -189,6 +190,23 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [ ] Follow up: arm64 matrix, signed apt repository, in app download and verification, Flathub submission
 - [ ] Verify it: /check verify Packaging, signing, updates, and release automation
 - [ ] Test it: /test Packaging, signing, updates, and release automation
+
+### 11. Visual features
+
+**Intent**: The first visual slice: an explain plan pane that runs the engine's explain statement and renders the plan beside the result, and a bar chart view of the current result with table and chart switching. Both use pure domain helpers over the shared value model. ERD, dashboard, visual query builder, and data compare follow with their own decisions.
+
+**Done when**: a user explains a statement and reads the plan without losing the editor, charts a result and switches back to the table, and both work for every SQL engine supported by the explain contract.
+
+- [x] Decide the visual slice (spec): [0011](../specs/0011-visual-features.md)
+- [x] Build it: /develop Visual features
+  - [x] Core visual module: explain statement selection per engine and chart series extraction, with unit tests
+  - [x] Explain action through the normal execution path, JSON pretty printing, and the collapsible plan pane
+  - [x] Results stack with the table, a cairo bar chart, labels and values, null skipping, and a 50 bar cap
+  - [x] Table and chart switching plus a clear no numeric column message
+  - [x] Verified chart and explain plan through container screenshots
+- [ ] Follow up: ERD with foreign key introspection, dashboard with saved charts, visual query builder, data compare and result diff, chart export
+- [ ] Verify it: /check verify Visual features
+- [ ] Test it: /test Visual features
 
 ## Deferred
 
