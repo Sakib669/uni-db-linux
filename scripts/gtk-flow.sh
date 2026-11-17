@@ -102,8 +102,33 @@ xdotool key ctrl+Return
 sleep 2
 import -window root /app/target/editor-page.png
 
-# Security page is the fifth sidebar row.
-xdotool mousemove $((X + 100)) $((Y + 234))
+# Designer page is the fourth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 194))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/designer-page.png
+
+# Type a table name, preview the DDL, and apply it.
+xdotool mousemove $((X + 600)) $((Y + 124))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 25 "events"
+sleep 0.3
+xdotool mousemove $((X + 937)) $((Y + 80))
+sleep 0.3
+xdotool click 1
+sleep 1
+import -window root /app/target/designer-preview.png
+xdotool mousemove $((X + 1064)) $((Y + 80))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/designer-applied.png
+
+# Security page is the sixth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 274))
 sleep 0.3
 xdotool click 1
 sleep 1
