@@ -20,6 +20,9 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 
 - [x] Decide the stack (spec): [0001](../specs/0001-native-gtk4-desktop-architecture/index.md)
 - [ ] Scaffold from the decision: /develop Stack and architecture
+  - [x] Workspace, core, store, engine, app service, bridge, and CI (verified: 35 tests, clippy and fmt clean, headless binary runs)
+  - [ ] Native window rendered (blocked: GTK development packages are not installed on this machine; `pkg-config gobject-2.0` fails)
+  - Code in `crates/` and `src/main.rs`
 - [ ] Verify it: /check verify Stack and architecture
 - [ ] Test it: /test Stack and architecture
 
