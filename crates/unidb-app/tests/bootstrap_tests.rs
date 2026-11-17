@@ -222,3 +222,66 @@ async fn query_runs_are_audited_and_cancel_reports_unsupported() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn designer_creates_and_alters_a_table_transactionally() {
+    use unidb_core::{ColumnDesign, SqlDialect, TableDesign, alter_table_sql, create_table_sql};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+
+    let mut id = ColumnDesign::new("id", "INTEGER");
+    id.primary_key = true;
+    id.auto_increment = true;
+    id.nullable = false;
+    let mut title = ColumnDesign::new("title", "TEXT");
+    title.nullable = false;
+    let mut design = TableDesign::new("events");
+    design.columns = vec![id, title];
+
+    let create = create_table_sql(SqlDialect::Sqlite, &design).expect("ddl");
+    service
+        .apply_statements(profile.id, &create)
+        .await
+        .expect("create table");
+    let tables = service
+        .list_tables(profile.id, "main")
+        .await
+        .expect("tables");
+    assert!(tables.contains(&"events".to_string()), "{tables:?}");
+
+    let original = service
+        .describe_table(profile.id, "main", "events")
+        .await
+        .expect("describe");
+    assert_eq!(original.len(), 2);
+    assert!(original[0].primary_key);
+
+    let mut altered = TableDesign::new("events");
+    altered.columns = original.iter().map(|column| column.to_design()).collect();
+    altered.columns.push(ColumnDesign::new("location", "TEXT"));
+    let alter = alter_table_sql(SqlDialect::Sqlite, "events", &original, &altered).expect("alter");
+    service
+        .apply_statements(profile.id, &alter)
+        .await
+        .expect("alter table");
+    let described = service
+        .describe_table(profile.id, "main", "events")
+        .await
+        .expect("describe again");
+    assert_eq!(described.len(), 3);
+    assert!(described.iter().any(|column| column.name == "location"));
+
+    let missing = service
+        .describe_table(profile.id, "main", "missing_table")
+        .await
+        .expect("empty describe");
+    assert!(missing.is_empty());
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}

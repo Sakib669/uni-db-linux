@@ -16,7 +16,9 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use unidb_core::{ConnectionProfile, Engine, ErrorCategory, QueryResult, UniDbError};
+use unidb_core::{
+    ConnectionProfile, Engine, ErrorCategory, QueryResult, TableColumnInfo, UniDbError,
+};
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
     PostgresConnector, RedisConnector, Session, SqliteConnector,
@@ -40,6 +42,15 @@ enum Command {
         reply: oneshot::Sender<Result<Vec<String>, UniDbError>>,
     },
     Cancel {
+        reply: oneshot::Sender<Result<(), UniDbError>>,
+    },
+    DescribeTable {
+        database: String,
+        table: String,
+        reply: oneshot::Sender<Result<Vec<TableColumnInfo>, UniDbError>>,
+    },
+    ApplyStatements {
+        statements: Vec<String>,
         reply: oneshot::Sender<Result<(), UniDbError>>,
     },
     Shutdown,
@@ -359,6 +370,48 @@ impl AppService {
             .map_err(|_| connection_stopped_error())?
     }
 
+    /// Describes the columns of a table for the designer.
+    pub async fn describe_table(
+        &self,
+        connection_id: Uuid,
+        database: &str,
+        table: &str,
+    ) -> Result<Vec<TableColumnInfo>, UniDbError> {
+        let sender = self.connection_sender(connection_id).await?;
+        let (reply_sender, reply_receiver) = oneshot::channel();
+        sender
+            .send(Command::DescribeTable {
+                database: database.to_string(),
+                table: table.to_string(),
+                reply: reply_sender,
+            })
+            .await
+            .map_err(|_| connection_stopped_error())?;
+        reply_receiver
+            .await
+            .map_err(|_| connection_stopped_error())?
+    }
+
+    /// Applies DDL statements inside one transaction on an open connection.
+    pub async fn apply_statements(
+        &self,
+        connection_id: Uuid,
+        statements: &[String],
+    ) -> Result<(), UniDbError> {
+        let sender = self.connection_sender(connection_id).await?;
+        let (reply_sender, reply_receiver) = oneshot::channel();
+        sender
+            .send(Command::ApplyStatements {
+                statements: statements.to_vec(),
+                reply: reply_sender,
+            })
+            .await
+            .map_err(|_| connection_stopped_error())?;
+        reply_receiver
+            .await
+            .map_err(|_| connection_stopped_error())?
+    }
+
     /// Lists databases or keyspaces for an open connection.
     pub async fn list_databases(&self, connection_id: Uuid) -> Result<Vec<String>, UniDbError> {
         let sender = self.connection_sender(connection_id).await?;
@@ -485,6 +538,17 @@ struct ConnectionActor {
 }
 
 impl ConnectionActor {
+    async fn apply_statements(&mut self, statements: &[String]) -> Result<(), UniDbError> {
+        self.session.begin().await?;
+        for statement in statements {
+            if let Err(error) = self.session.execute(statement).await {
+                let _ = self.session.rollback().await;
+                return Err(error);
+            }
+        }
+        self.session.commit().await
+    }
+
     async fn run(mut self, mut receiver: mpsc::Receiver<Command>) {
         while let Some(command) = receiver.recv().await {
             match command {
@@ -507,6 +571,18 @@ impl ConnectionActor {
                 }
                 Command::Cancel { reply } => {
                     let result = self.session.cancel().await;
+                    let _ = reply.send(result);
+                }
+                Command::DescribeTable {
+                    database,
+                    table,
+                    reply,
+                } => {
+                    let result = self.session.describe_table(&database, &table).await;
+                    let _ = reply.send(result);
+                }
+                Command::ApplyStatements { statements, reply } => {
+                    let result = self.apply_statements(&statements).await;
                     let _ = reply.send(result);
                 }
                 Command::Shutdown => break,
