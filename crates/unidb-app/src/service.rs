@@ -17,7 +17,9 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use unidb_core::{
-    ConnectionProfile, Engine, ErrorCategory, QueryResult, TableColumnInfo, UniDbError,
+    ConnectionProfile, Engine, ErrorCategory, QueryResult, SqlDialect, TableColumnInfo,
+    TransferFormat, UniDbError, coerce_value, insert_statements, parse_import, rows_to_csv,
+    rows_to_json,
 };
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
@@ -63,6 +65,35 @@ struct ConnectionHandle {
 
 /// The app service layer. Holds the runtime bridge, the optional store, the
 /// engine registry, and the live connection actors.
+/// Summary of one import run.
+#[derive(Debug, Clone, Default)]
+pub struct ImportReport {
+    pub rows_read: usize,
+    pub rows_inserted: usize,
+    pub rows_rejected: usize,
+    pub batches: usize,
+    pub warnings: Vec<String>,
+}
+
+/// Options for importing a file into a table.
+#[derive(Debug, Clone)]
+pub struct ImportOptions {
+    pub database: String,
+    pub table: String,
+    pub path: PathBuf,
+    pub format: TransferFormat,
+    pub has_headers: bool,
+    pub delimiter: u8,
+    pub null_marker: Option<String>,
+}
+
+/// Summary of one export run.
+#[derive(Debug, Clone)]
+pub struct ExportReport {
+    pub rows: usize,
+    pub path: PathBuf,
+}
+
 pub struct AppService {
     bridge: Bridge,
     store: Option<Arc<Store>>,
@@ -474,6 +505,243 @@ impl AppService {
         profile.validate()?;
         let connector = self.connectors.get(profile.engine)?;
         connector.test(profile, password).await
+    }
+
+    /// Reads a CSV or JSON file and inserts its rows into a table in batches.
+    pub async fn import_file(
+        &self,
+        connection_id: Uuid,
+        options: &ImportOptions,
+    ) -> Result<ImportReport, UniDbError> {
+        let bytes = tokio::fs::read(&options.path).await.map_err(|error| {
+            UniDbError::new(
+                "transfer_read_failed",
+                ErrorCategory::Network,
+                "The import file could not be read",
+            )
+            .with_detail(error.to_string())
+        })?;
+        let data = parse_import(
+            &bytes,
+            options.format,
+            options.has_headers,
+            options.delimiter,
+        )?;
+        let profile = self
+            .require_store()?
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "connection_not_found",
+                    ErrorCategory::ConnectionLost,
+                    "The connection profile could not be loaded",
+                )
+            })?;
+        let dialect = SqlDialect::for_engine(profile.engine).ok_or_else(|| {
+            UniDbError::new(
+                "transfer_unsupported",
+                ErrorCategory::Unsupported,
+                "Import is not available for this engine",
+            )
+        })?;
+        let table_columns = self
+            .describe_table(connection_id, &options.database, &options.table)
+            .await?;
+        let mut warnings = Vec::new();
+
+        let mut mapped: Vec<(usize, String)> = Vec::new();
+        for column in &table_columns {
+            match data
+                .headers
+                .iter()
+                .position(|header| header.eq_ignore_ascii_case(&column.name))
+            {
+                Some(index) => mapped.push((index, column.name.clone())),
+                None => {
+                    if column.nullable || column.default.is_some() {
+                        warnings.push(format!(
+                            "Column {} is missing from the file and will be NULL",
+                            column.name
+                        ));
+                    } else if !column.primary_key {
+                        return Err(UniDbError::new(
+                            "transfer_mapping_failed",
+                            ErrorCategory::Syntax,
+                            format!(
+                                "Column {} is required but missing from the file",
+                                column.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        for (index, header) in data.headers.iter().enumerate() {
+            if !mapped
+                .iter()
+                .any(|(mapped_index, _)| *mapped_index == index)
+            {
+                warnings.push(format!("Field {header} does not match a table column"));
+            }
+        }
+        if mapped.is_empty() {
+            return Err(UniDbError::new(
+                "transfer_mapping_failed",
+                ErrorCategory::Syntax,
+                "No file fields match the table columns",
+            ));
+        }
+
+        let mut report = ImportReport {
+            rows_read: data.rows.len(),
+            ..ImportReport::default()
+        };
+        let mut coerced_rows: Vec<Vec<unidb_core::Value>> = Vec::new();
+        for (row_index, row) in data.rows.iter().enumerate() {
+            let mut values = Vec::new();
+            let mut failed: Option<String> = None;
+            for (header_index, column_name) in &mapped {
+                let target = table_columns
+                    .iter()
+                    .find(|column| &column.name == column_name)
+                    .map(|column| column.type_name.as_str())
+                    .unwrap_or("TEXT");
+                let field = row.get(*header_index).and_then(Option::as_deref);
+                match coerce_value(field, target, options.null_marker.as_deref()) {
+                    Ok(value) => values.push(value),
+                    Err(reason) => {
+                        failed = Some(format!(
+                            "row {}: column {}: {reason}",
+                            row_index + 1,
+                            column_name
+                        ));
+                        break;
+                    }
+                }
+            }
+            match failed {
+                Some(reason) => {
+                    report.rows_rejected += 1;
+                    if report.warnings.len() < 5 {
+                        report.warnings.push(reason);
+                    }
+                }
+                None => coerced_rows.push(values),
+            }
+        }
+        if coerced_rows.is_empty() {
+            report.batches = 0;
+            report.warnings.push("No rows were imported".to_string());
+            self.audit_transfer(
+                "import_finished",
+                Some(connection_id),
+                "success",
+                serde_json::json!({
+                    "rows_read": report.rows_read,
+                    "rows_inserted": 0,
+                    "rows_rejected": report.rows_rejected,
+                    "format": options.format.label(),
+                    "path": options.path.display().to_string(),
+                }),
+            )
+            .await?;
+            return Ok(report);
+        }
+        let column_names: Vec<String> = mapped.iter().map(|(_, name)| name.clone()).collect();
+        let statements =
+            insert_statements(dialect, &options.table, &column_names, &coerced_rows, 200)?;
+        for statement in &statements {
+            let rows_in_batch = (coerced_rows.len() - report.rows_inserted).min(200);
+            if let Err(error) = self
+                .apply_statements(connection_id, std::slice::from_ref(statement))
+                .await
+            {
+                self.audit_transfer(
+                    "import_finished",
+                    Some(connection_id),
+                    "error",
+                    serde_json::json!({
+                        "rows_read": report.rows_read,
+                        "rows_inserted": report.rows_inserted,
+                        "error_code": error.code(),
+                        "format": options.format.label(),
+                    }),
+                )
+                .await?;
+                return Err(error);
+            }
+            report.batches += 1;
+            report.rows_inserted += rows_in_batch;
+        }
+        self.audit_transfer(
+            "import_finished",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "rows_read": report.rows_read,
+                "rows_inserted": report.rows_inserted,
+                "rows_rejected": report.rows_rejected,
+                "batches": report.batches,
+                "format": options.format.label(),
+                "path": options.path.display().to_string(),
+            }),
+        )
+        .await?;
+        Ok(report)
+    }
+
+    /// Runs a statement and writes its result as CSV or JSON.
+    pub async fn export_query(
+        &self,
+        connection_id: Uuid,
+        sql: &str,
+        format: TransferFormat,
+        path: &Path,
+    ) -> Result<ExportReport, UniDbError> {
+        let result = self.execute(connection_id, sql).await?;
+        let contents = match format {
+            TransferFormat::Csv => rows_to_csv(&result.columns, &result.rows)?,
+            TransferFormat::Json => rows_to_json(&result.columns, &result.rows)?,
+        };
+        tokio::fs::write(path, contents).await.map_err(|error| {
+            UniDbError::new(
+                "transfer_write_failed",
+                ErrorCategory::Network,
+                "The export file could not be written",
+            )
+            .with_detail(error.to_string())
+        })?;
+        self.audit_transfer(
+            "export_finished",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "rows": result.rows.len(),
+                "format": format.label(),
+                "path": path.display().to_string(),
+            }),
+        )
+        .await?;
+        Ok(ExportReport {
+            rows: result.rows.len(),
+            path: path.to_path_buf(),
+        })
+    }
+
+    async fn audit_transfer(
+        &self,
+        action: &str,
+        connection_id: Option<Uuid>,
+        outcome: &str,
+        detail: serde_json::Value,
+    ) -> Result<(), UniDbError> {
+        if let Some(store) = &self.store {
+            store
+                .add_audit(action, connection_id, outcome, detail)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Opens one in memory SQLite session and runs a version query. This is the

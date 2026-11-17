@@ -285,3 +285,102 @@ async fn designer_creates_and_alters_a_table_transactionally() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn import_and_export_round_trip_through_files() {
+    use unidb_app::{ImportOptions, ImportReport};
+    use unidb_core::{ColumnDesign, SqlDialect, TableDesign, TransferFormat, create_table_sql};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+
+    let mut id = ColumnDesign::new("id", "INTEGER");
+    id.primary_key = true;
+    id.auto_increment = true;
+    id.nullable = false;
+    let mut name = ColumnDesign::new("name", "TEXT");
+    name.nullable = false;
+    let mut score = ColumnDesign::new("score", "REAL");
+    score.nullable = true;
+    let mut design = TableDesign::new("people");
+    design.columns = vec![id, name, score];
+    service
+        .apply_statements(
+            profile.id,
+            &create_table_sql(SqlDialect::Sqlite, &design).expect("ddl"),
+        )
+        .await
+        .expect("create");
+
+    let csv_path = dir.path().join("people.csv");
+    std::fs::write(
+        &csv_path,
+        "id,name,score\n1,Ada,9.5\n2,\"Grace \"\"Hopper\"\"\",8\n3,Bad,not-a-number\n",
+    )
+    .expect("csv");
+    let report: ImportReport = service
+        .import_file(
+            profile.id,
+            &ImportOptions {
+                database: "main".to_string(),
+                table: "people".to_string(),
+                path: csv_path,
+                format: TransferFormat::Csv,
+                has_headers: true,
+                delimiter: b',',
+                null_marker: None,
+            },
+        )
+        .await
+        .expect("import");
+    assert_eq!(report.rows_read, 3);
+    assert_eq!(report.rows_inserted, 2);
+    assert_eq!(report.rows_rejected, 1);
+
+    let rows = service
+        .execute(profile.id, "SELECT COUNT(*) FROM people")
+        .await
+        .expect("count");
+    assert_eq!(rows.rows[0][0], unidb_core::Value::Int(2));
+
+    let export_path = dir.path().join("people-out.csv");
+    let exported = service
+        .export_query(
+            profile.id,
+            "SELECT id, name FROM people ORDER BY id",
+            TransferFormat::Csv,
+            &export_path,
+        )
+        .await
+        .expect("export");
+    assert_eq!(exported.rows, 2);
+    let contents = std::fs::read_to_string(&export_path).expect("read export");
+    assert!(contents.starts_with("id,name"));
+    assert!(contents.contains("1,Ada"));
+
+    let json_path = dir.path().join("people-out.json");
+    service
+        .export_query(
+            profile.id,
+            "SELECT id, name FROM people ORDER BY id",
+            TransferFormat::Json,
+            &json_path,
+        )
+        .await
+        .expect("json export");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json_path).expect("read json"))
+            .expect("parse json");
+    assert_eq!(parsed[1]["name"], "Grace \"Hopper\"");
+
+    let audit = service.recent_audit(20).await.expect("audit");
+    assert!(audit.iter().any(|entry| entry.action == "import_finished"));
+    assert!(audit.iter().any(|entry| entry.action == "export_finished"));
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
