@@ -127,6 +127,15 @@ async fn postgres_connects_and_returns_typed_rows() {
     );
     let tables = session.list_tables("unidb").await.expect("tables");
     assert!(tables.iter().any(|table| table == "public.t"), "{tables:?}");
+
+    let columns = session
+        .describe_table("unidb", "public.t")
+        .await
+        .expect("describe");
+    assert!(
+        columns.iter().any(|column| column.name == "id"),
+        "{columns:?}"
+    );
 }
 
 #[tokio::test]
@@ -188,6 +197,15 @@ async fn mysql_connects_and_returns_typed_rows() {
     );
     let tables = session.list_tables("unidb").await.expect("tables");
     assert!(tables.iter().any(|table| table == "unidb.t"), "{tables:?}");
+
+    let columns = session
+        .describe_table("unidb", "unidb.t")
+        .await
+        .expect("describe");
+    assert!(
+        columns.iter().any(|column| column.name == "id"),
+        "{columns:?}"
+    );
 }
 
 #[tokio::test]

@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use unidb_core::{Capabilities, ConnectionProfile, Engine, ErrorCategory, QueryResult, UniDbError};
+use unidb_core::{
+    Capabilities, ConnectionProfile, Engine, ErrorCategory, QueryResult, TableColumnInfo,
+    UniDbError,
+};
 
 #[async_trait]
 pub trait Connector: Send + Sync {
@@ -61,6 +64,19 @@ pub trait Session: Send {
             "schema_unsupported",
             ErrorCategory::Unsupported,
             "This engine does not support browsing yet",
+        ))
+    }
+
+    /// Column metadata for the table designer.
+    async fn describe_table(
+        &mut self,
+        _database: &str,
+        _table: &str,
+    ) -> Result<Vec<TableColumnInfo>, UniDbError> {
+        Err(UniDbError::new(
+            "table_design_unsupported",
+            ErrorCategory::Unsupported,
+            "The table designer is not available for this engine",
         ))
     }
 }

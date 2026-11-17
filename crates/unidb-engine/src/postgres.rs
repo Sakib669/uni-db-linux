@@ -257,6 +257,61 @@ impl Session for PostgresSession {
         .await
         .map_err(|error| driver_error("schema_query_failed", "Could not list the tables", error))
     }
+
+    async fn describe_table(
+        &mut self,
+        _database: &str,
+        table: &str,
+    ) -> Result<Vec<unidb_core::TableColumnInfo>, UniDbError> {
+        let (schema, table) = match table.split_once('.') {
+            Some((schema, table)) => (schema.to_string(), table.to_string()),
+            None => ("public".to_string(), table.to_string()),
+        };
+        let rows = sqlx::query(
+            "SELECT c.column_name::text AS name, c.data_type::text AS data_type,
+                    c.is_nullable::text AS is_nullable, c.column_default::text AS column_default,
+                    EXISTS(
+                        SELECT 1 FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name = kcu.constraint_name
+                         AND tc.table_schema = kcu.table_schema
+                         AND tc.table_name = kcu.table_name
+                        WHERE tc.constraint_type = 'PRIMARY KEY'
+                          AND kcu.column_name = c.column_name
+                          AND kcu.table_schema = c.table_schema
+                          AND kcu.table_name = c.table_name
+                    ) AS is_primary
+             FROM information_schema.columns c
+             WHERE c.table_schema = $1 AND c.table_name = $2
+             ORDER BY c.ordinal_position",
+        )
+        .bind(&schema)
+        .bind(&table)
+        .fetch_all(&mut *self.connection)
+        .await
+        .map_err(|error| {
+            driver_error("schema_query_failed", "Could not describe the table", error)
+        })?;
+        let mut columns = Vec::new();
+        for row in rows {
+            use sqlx::Row;
+            let name: String = row.try_get("name").map_err(|error| {
+                driver_error("schema_query_failed", "Could not read a column name", error)
+            })?;
+            let data_type: String = row.try_get("data_type").unwrap_or_default();
+            let nullable: String = row.try_get("is_nullable").unwrap_or_default();
+            let default: Option<String> = row.try_get("column_default").unwrap_or(None);
+            let primary: bool = row.try_get("is_primary").unwrap_or(false);
+            columns.push(unidb_core::TableColumnInfo {
+                name,
+                type_name: data_type,
+                nullable: nullable == "YES",
+                primary_key: primary,
+                default,
+            });
+        }
+        Ok(columns)
+    }
 }
 
 fn map_rows(rows: &[PgRow], elapsed_ms: u128) -> QueryResult {

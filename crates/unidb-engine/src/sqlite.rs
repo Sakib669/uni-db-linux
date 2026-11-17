@@ -192,6 +192,38 @@ impl Session for SqliteSession {
         .await
         .map_err(|error| sqlite_error("Could not list the SQLite tables", error))
     }
+
+    async fn describe_table(
+        &mut self,
+        _database: &str,
+        table: &str,
+    ) -> Result<Vec<unidb_core::TableColumnInfo>, UniDbError> {
+        let quoted = table.replace('"', "\"\"");
+        let statement = sqlx::AssertSqlSafe(format!("PRAGMA table_info(\"{quoted}\")"));
+        let rows = sqlx::query(statement)
+            .fetch_all(&mut *self.connection)
+            .await
+            .map_err(|error| sqlite_error("Could not describe the SQLite table", error))?;
+        let mut columns = Vec::new();
+        for row in rows {
+            use sqlx::Row;
+            let name: String = row
+                .try_get("name")
+                .map_err(|error| sqlite_error("Could not read a column name", error))?;
+            let type_name: String = row.try_get("type").unwrap_or_default();
+            let not_null: i64 = row.try_get("notnull").unwrap_or(0);
+            let default: Option<String> = row.try_get("dflt_value").unwrap_or(None);
+            let primary: i64 = row.try_get("pk").unwrap_or(0);
+            columns.push(unidb_core::TableColumnInfo {
+                name,
+                type_name,
+                nullable: not_null == 0,
+                primary_key: primary > 0,
+                default,
+            });
+        }
+        Ok(columns)
+    }
 }
 
 impl SqliteSession {
