@@ -2,7 +2,7 @@
 //! audit log. Migrations run at open, secrets are encrypted before they touch
 //! disk, and the master key lifecycle is enforced here.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -48,6 +48,8 @@ pub struct Store {
     pool: SqlitePool,
     secrets: SecretBox,
     key_check: [u8; 32],
+    database_path: PathBuf,
+    backups_dir: PathBuf,
 }
 
 impl Store {
@@ -92,6 +94,61 @@ impl Store {
                 )
                 .with_source(error)
             })?;
+
+        let existing_database: bool = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_meta'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .map_err(|error| {
+            UniDbError::new(
+                "store_open_failed",
+                ErrorCategory::Internal,
+                "Could not inspect the app database",
+            )
+            .with_source(error)
+        })?
+        .is_some();
+
+        let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| {
+                UniDbError::new(
+                    "store_open_failed",
+                    ErrorCategory::Internal,
+                    "Could not check the app database",
+                )
+                .with_source(error)
+            })?;
+        if integrity != "ok" {
+            return Err(UniDbError::new(
+                "store_corrupt",
+                ErrorCategory::Internal,
+                "The app database is corrupt. Restore the newest file from backups/ and start again.",
+            )
+            .with_detail(integrity));
+        }
+
+        let backups_dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("backups");
+        std::fs::create_dir_all(&backups_dir).map_err(|error| {
+            UniDbError::new(
+                "store_backup_failed",
+                ErrorCategory::Internal,
+                "Could not create the backup directory",
+            )
+            .with_source(error)
+        })?;
+        if existing_database {
+            let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&pool)
+                .await;
+            backup_database(path, &backups_dir)?;
+            prune_backups(&backups_dir, 5)?;
+        }
 
         sqlx::migrate!("./migrations")
             .run(&pool)
@@ -154,11 +211,106 @@ impl Store {
             pool,
             secrets: SecretBox::new(key),
             key_check,
+            database_path: path.to_path_buf(),
+            backups_dir,
         })
     }
 
     pub fn key_check(&self) -> &[u8; 32] {
         &self.key_check
+    }
+
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
+    pub fn backups_dir(&self) -> &Path {
+        &self.backups_dir
+    }
+
+    /// Copies the database to the backups directory and rotates the old ones.
+    pub async fn backup_now(&self) -> Result<PathBuf, UniDbError> {
+        let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&self.pool)
+            .await;
+        let backup = backup_database(&self.database_path, &self.backups_dir)?;
+        prune_backups(&self.backups_dir, 5)?;
+        Ok(backup)
+    }
+
+    /// Newest first.
+    pub fn list_backups(&self) -> Result<Vec<PathBuf>, UniDbError> {
+        let mut backups = std::fs::read_dir(&self.backups_dir)
+            .map_err(|error| {
+                UniDbError::new(
+                    "store_backup_failed",
+                    ErrorCategory::Internal,
+                    "Could not read the backup directory",
+                )
+                .with_source(error)
+            })?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "db"))
+            .collect::<Vec<_>>();
+        backups.sort();
+        backups.reverse();
+        Ok(backups)
+    }
+
+    pub async fn connection_count(&self) -> Result<i64, UniDbError> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM connections")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| UniDbError::internal("Could not count connections").with_source(error))
+    }
+
+    pub async fn encrypted_secret_count(&self) -> Result<i64, UniDbError> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM connections WHERE password_ciphertext IS NOT NULL")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not count saved secrets").with_source(error)
+            })
+    }
+
+    pub async fn audit_count(&self) -> Result<i64, UniDbError> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not count audit entries").with_source(error)
+            })
+    }
+
+    /// Reads the previous run's shutdown state, then marks this run as in
+    /// progress. Returns the timestamp of an unclean previous run.
+    pub async fn begin_run(&self) -> Result<Option<String>, UniDbError> {
+        let previous = self.previous_unclean_shutdown().await?;
+        self.mark_running().await?;
+        Ok(previous)
+    }
+
+    /// Records that a run started. Cleared by `mark_clean_shutdown`.
+    pub async fn mark_running(&self) -> Result<(), UniDbError> {
+        self.set_setting(
+            "unclean_shutdown",
+            serde_json::json!(Utc::now().to_rfc3339()),
+        )
+        .await
+    }
+
+    pub async fn mark_clean_shutdown(&self) -> Result<(), UniDbError> {
+        self.set_setting("unclean_shutdown", serde_json::Value::Null)
+            .await
+    }
+
+    /// Timestamp of the previous run when it did not shut down cleanly.
+    pub async fn previous_unclean_shutdown(&self) -> Result<Option<String>, UniDbError> {
+        match self.get_setting("unclean_shutdown").await? {
+            Some(serde_json::Value::String(timestamp)) => Ok(Some(timestamp)),
+            _ => Ok(None),
+        }
     }
 
     /// Saves a profile. `password` is encrypted before it touches disk; passing
@@ -491,6 +643,52 @@ impl Store {
             })?;
         Ok(result.rows_affected())
     }
+}
+
+fn backup_database(database: &Path, backups_dir: &Path) -> Result<PathBuf, UniDbError> {
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S-%3f");
+    let destination = backups_dir.join(format!("unidb-{stamp}.db"));
+    std::fs::copy(database, &destination).map_err(|error| {
+        UniDbError::new(
+            "store_backup_failed",
+            ErrorCategory::Internal,
+            "Could not back up the app database",
+        )
+        .with_source(error)
+    })?;
+    Ok(destination)
+}
+
+fn prune_backups(backups_dir: &Path, keep: usize) -> Result<(), UniDbError> {
+    let mut backups = std::fs::read_dir(backups_dir)
+        .map_err(|error| {
+            UniDbError::new(
+                "store_backup_failed",
+                ErrorCategory::Internal,
+                "Could not read the backup directory",
+            )
+            .with_source(error)
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "db"))
+        .collect::<Vec<_>>();
+    backups.sort();
+    if backups.len() <= keep {
+        return Ok(());
+    }
+    let remove_count = backups.len() - keep;
+    for path in backups.into_iter().take(remove_count) {
+        std::fs::remove_file(&path).map_err(|error| {
+            UniDbError::new(
+                "store_backup_failed",
+                ErrorCategory::Internal,
+                "Could not rotate an old backup",
+            )
+            .with_source(error)
+        })?;
+    }
+    Ok(())
 }
 
 async fn write_key_check(pool: &SqlitePool, key: &MasterKey) -> Result<(), UniDbError> {

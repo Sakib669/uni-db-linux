@@ -174,3 +174,83 @@ async fn opening_fails_for_an_invalid_cloud_profile() {
         .expect_err("cloud TLS is required");
     assert_eq!(error.code(), "cloud_requires_tls");
 }
+
+#[tokio::test]
+async fn backups_rotate_and_counts_are_live() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unidb.db");
+    let provider = test_provider();
+
+    let store = Store::open(&path, &provider).await.expect("open store");
+    let profile = ConnectionProfile::new("Local", Engine::SQLite, "", "app.db");
+    store
+        .save_connection(&profile, Some("secret"))
+        .await
+        .expect("save connection");
+    store
+        .add_audit(
+            "connection_saved",
+            Some(profile.id),
+            "success",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("audit");
+
+    assert_eq!(store.connection_count().await.expect("count"), 1);
+    assert_eq!(store.encrypted_secret_count().await.expect("secrets"), 1);
+    assert_eq!(store.audit_count().await.expect("audit"), 1);
+
+    for _ in 0..7 {
+        store.backup_now().await.expect("backup");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let backups = store.list_backups().expect("list backups");
+    assert_eq!(backups.len(), 5, "rotation keeps five backups");
+    assert!(backups.iter().all(|path| path.exists()));
+}
+
+#[tokio::test]
+async fn unclean_shutdown_marker_survives_and_clears() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unidb.db");
+    let provider = test_provider();
+    let store = Store::open(&path, &provider).await.expect("open store");
+
+    assert!(store.begin_run().await.expect("begin run").is_none());
+    assert!(
+        store
+            .previous_unclean_shutdown()
+            .await
+            .expect("read marker")
+            .is_some(),
+        "the running marker is stored"
+    );
+    store.mark_clean_shutdown().await.expect("clean shutdown");
+    assert!(
+        store
+            .previous_unclean_shutdown()
+            .await
+            .expect("read")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_corrupt_database_reports_a_safe_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unidb.db");
+    std::fs::write(&path, b"this is not a sqlite database").expect("write garbage");
+    let provider = test_provider();
+
+    let error = match Store::open(&path, &provider).await {
+        Ok(_) => panic!("a corrupt database must not open"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error.code(), "store_corrupt" | "store_open_failed"),
+        "unexpected error code {}",
+        error.code()
+    );
+    assert!(error.user_message().to_lowercase().contains("database"));
+}
