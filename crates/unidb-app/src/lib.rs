@@ -3,10 +3,15 @@
 //! events through one bridge.
 
 pub mod bridge;
+pub mod paths;
+pub mod security;
 pub mod service;
 
 pub use bridge::{Bridge, EventSink, QueryEvent};
+pub use paths::default_data_dir;
+pub use security::{CheckStatus, SecurityCheck, SecurityReport};
 pub use service::AppService;
+pub use unidb_store::AuditEntry;
 
 /// Grid and status text for a value, kept here so the interface never formats
 /// a driver type itself.

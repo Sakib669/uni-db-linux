@@ -7,6 +7,7 @@
 //! future test harness free of keyring state.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,14 +16,16 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use unidb_core::{ConnectionProfile, Engine, QueryResult, UniDbError};
+use unidb_core::{ConnectionProfile, Engine, ErrorCategory, QueryResult, UniDbError};
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
     PostgresConnector, RedisConnector, Session, SqliteConnector,
 };
-use unidb_store::Store;
+use unidb_store::{AuditEntry, KeyringKeyProvider, MasterKeyProvider, Store};
 
 use crate::bridge::{Bridge, QueryEvent};
+use crate::paths::default_data_dir;
+use crate::security::{self, SecurityReport};
 
 enum Command {
     Execute {
@@ -44,6 +47,7 @@ pub struct AppService {
     store: Option<Arc<Store>>,
     connectors: Arc<ConnectorRegistry>,
     connections: Mutex<HashMap<Uuid, ConnectionHandle>>,
+    previous_unclean_shutdown: Option<String>,
 }
 
 impl AppService {
@@ -53,6 +57,7 @@ impl AppService {
             store: Some(store),
             connectors,
             connections: Mutex::new(HashMap::new()),
+            previous_unclean_shutdown: None,
         }
     }
 
@@ -64,11 +69,12 @@ impl AppService {
             store: None,
             connectors,
             connections: Mutex::new(HashMap::new()),
+            previous_unclean_shutdown: None,
         }
     }
 
-    /// The scaffold service: runtime bridge plus the engines that are built.
-    pub fn bootstrap_headless(runtime: Handle) -> Self {
+    /// The engine registry with every engine built into this binary.
+    pub fn connector_registry() -> Arc<ConnectorRegistry> {
         let mut connectors = ConnectorRegistry::new();
         connectors.register(Arc::new(SqliteConnector::new()));
         connectors.register_shared(
@@ -83,7 +89,44 @@ impl AppService {
         connectors.register(Arc::new(MongoConnector::new()));
         connectors.register(Arc::new(CassandraConnector::new()));
         connectors.register(Arc::new(MssqlConnector::new()));
-        Self::headless(Bridge::new(runtime), Arc::new(connectors))
+        Arc::new(connectors)
+    }
+
+    /// The scaffold service: runtime bridge plus the engines that are built.
+    pub fn bootstrap_headless(runtime: Handle) -> Self {
+        Self::headless(Bridge::new(runtime), Self::connector_registry())
+    }
+
+    /// The real service: opens the app store with the desktop keyring.
+    pub async fn bootstrap(runtime: Handle) -> Result<Self, UniDbError> {
+        Self::bootstrap_in(runtime, default_data_dir(), &KeyringKeyProvider::new()).await
+    }
+
+    /// Bootstrap with an injected data directory and key provider, used by
+    /// tests and by the diagnostic retry path.
+    pub async fn bootstrap_in(
+        runtime: Handle,
+        data_dir: impl AsRef<Path>,
+        provider: &dyn MasterKeyProvider,
+    ) -> Result<Self, UniDbError> {
+        let data_dir = data_dir.as_ref();
+        std::fs::create_dir_all(data_dir).map_err(|error| {
+            UniDbError::new(
+                "store_directory_failed",
+                ErrorCategory::Internal,
+                "Could not create the app data directory",
+            )
+            .with_source(error)
+        })?;
+        let store = Store::open(data_dir.join("unidb.db"), provider).await?;
+        let previous_unclean_shutdown = store.begin_run().await?;
+        Ok(Self {
+            bridge: Bridge::new(runtime),
+            store: Some(Arc::new(store)),
+            connectors: Self::connector_registry(),
+            connections: Mutex::new(HashMap::new()),
+            previous_unclean_shutdown,
+        })
     }
 
     pub fn bridge(&self) -> &Bridge {
@@ -97,6 +140,89 @@ impl AppService {
     /// Sends an event to the interface sink. Used by callers that own a stream.
     pub fn emit(&self, sink: &dyn crate::bridge::EventSink<QueryEvent>, event: QueryEvent) {
         sink.send(event);
+    }
+
+    fn require_store(&self) -> Result<&Arc<Store>, UniDbError> {
+        self.store.as_ref().ok_or_else(|| {
+            UniDbError::new(
+                "store_unavailable",
+                ErrorCategory::Internal,
+                "The app database is not open",
+            )
+        })
+    }
+
+    pub fn data_dir(&self) -> Option<PathBuf> {
+        self.store
+            .as_ref()
+            .and_then(|store| store.database_path().parent().map(Path::to_path_buf))
+    }
+
+    /// Saves or updates a connection and records the audit entry.
+    pub async fn save_connection(
+        &self,
+        profile: &ConnectionProfile,
+        password: Option<&str>,
+    ) -> Result<(), UniDbError> {
+        let store = self.require_store()?;
+        store.save_connection(profile, password).await?;
+        store
+            .add_audit(
+                "connection_saved",
+                Some(profile.id),
+                "success",
+                serde_json::json!({
+                    "engine": profile.engine.display(),
+                    "name": profile.name,
+                }),
+            )
+            .await
+    }
+
+    pub async fn list_connections(&self) -> Result<Vec<ConnectionProfile>, UniDbError> {
+        self.require_store()?.list_connections().await
+    }
+
+    pub async fn delete_connection(&self, id: Uuid) -> Result<u64, UniDbError> {
+        let store = self.require_store()?;
+        let removed = store.delete_connection(id).await?;
+        store
+            .add_audit(
+                "connection_deleted",
+                Some(id),
+                if removed > 0 { "success" } else { "missing" },
+                serde_json::json!({}),
+            )
+            .await?;
+        Ok(removed)
+    }
+
+    pub async fn recent_audit(&self, limit: i64) -> Result<Vec<AuditEntry>, UniDbError> {
+        self.require_store()?.list_audit(limit).await
+    }
+
+    /// Copies the app database to a new backup and rotates the old ones.
+    pub async fn backup_now(&self) -> Result<PathBuf, UniDbError> {
+        self.require_store()?.backup_now().await
+    }
+
+    /// The live security report for the Security page.
+    pub async fn security_report(&self) -> Result<SecurityReport, UniDbError> {
+        security::build(
+            self.require_store()?,
+            self.previous_unclean_shutdown.clone(),
+        )
+        .await
+    }
+
+    /// Closes every connection and marks a clean shutdown.
+    pub async fn shutdown(&self) {
+        self.close_all().await;
+        if let Some(store) = &self.store
+            && let Err(error) = store.mark_clean_shutdown().await
+        {
+            tracing::warn!(message = %error, "could not mark a clean shutdown");
+        }
     }
 
     /// Opens a session, starts its actor, and records the audit entry.
