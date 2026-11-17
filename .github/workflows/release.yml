@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config dpkg-dev python3 \
+            libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
+            libssl-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Gates
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+          cargo test --workspace --no-default-features
+
+      - name: Build and verify the .deb
+        env:
+          UNIDB_BUILD_LOCAL: "1"
+        run: ./scripts/package-deb.sh
+
+      - name: Generate the SBOM
+        run: ./scripts/generate-sbom.sh
+
+      - name: Checksums
+        run: |
+          cd target
+          sha256sum unidb_*.deb sbom.cdx.json > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Sign artifacts
+        if: ${{ env.RELEASE_GPG_PRIVATE_KEY != '' }}
+        env:
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "${RELEASE_GPG_PRIVATE_KEY:-}" ]; then
+            echo "No signing key configured; skipping signatures."
+            exit 0
+          fi
+          echo "$RELEASE_GPG_PRIVATE_KEY" | gpg --batch --import
+          for file in target/unidb_*.deb target/sbom.cdx.json target/SHA256SUMS; do
+            gpg --batch --yes --armor --detach-sign "$file"
+          done
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            target/unidb_*.deb \
+            target/sbom.cdx.json \
+            target/SHA256SUMS \
+            target/*.asc 2>/dev/null || \
+          gh release create "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            target/unidb_*.deb \
+            target/sbom.cdx.json \
+            target/SHA256SUMS
