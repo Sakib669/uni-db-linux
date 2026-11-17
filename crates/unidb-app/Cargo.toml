@@ -12,6 +12,7 @@ unidb-core.workspace = true
 unidb-engine.workspace = true
 unidb-store.workspace = true
 serde_json.workspace = true
+ureq.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

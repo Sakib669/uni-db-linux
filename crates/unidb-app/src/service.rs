@@ -756,6 +756,20 @@ impl AppService {
         }
     }
 
+    /// Checks an update feed and returns a release only when it is newer than
+    /// the running build. Nothing is downloaded or installed.
+    pub async fn check_updates(
+        &self,
+        feed_url: &str,
+    ) -> Result<Option<crate::update::ReleaseInfo>, UniDbError> {
+        let release = crate::update::fetch_latest(feed_url).await?;
+        if crate::update::is_newer(env!("CARGO_PKG_VERSION"), &release.version) {
+            Ok(Some(release))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Searches the query history through FTS5, newest first.
     pub async fn search_history(
         &self,
