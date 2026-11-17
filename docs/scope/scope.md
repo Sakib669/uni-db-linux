@@ -81,12 +81,12 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 **Done when**: a user can create a connection from the form or a URL, test it, save it, see it in the list, connect and disconnect, edit and delete it, all persisted across restarts and audited. After connect, the navigator lists databases and lazily lists tables.
 
 - [x] Decide the connection manager (spec): [0005](../specs/0005-connection-manager.md)
-- [ ] Build it: /develop Connection manager and navigator
-  - [x] URL parsing in core with per scheme tests (17 core unit tests pass)
+- [x] Build it: /develop Connection manager and navigator
+  - [x] URL parsing in core with per scheme tests (22 core unit tests pass)
   - [x] Connections section with saved list, empty state, live badge, toast feedback
   - [x] New and edit form in details or URL mode with test, save, cancel, validation toasts
   - [x] Connect, disconnect, delete with audit entries; verified through the UI save flow screenshot
-  - [ ] Navigator: schema contract and lazy database and table tree
+  - [x] Navigator: schema contract on all nine engines, live SQL family tests, and the connection, database, and table browser verified with a seeded table screenshot
 - [ ] Verify it: /check verify Connection manager and navigator
 - [ ] Test it: /test Connection manager and navigator
 
