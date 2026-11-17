@@ -2301,8 +2301,10 @@ checksum = "993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833"
 name = "unidb"
 version = "0.1.0"
 dependencies = [
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "unidb-app",
  "unidb-core",
  "unidb-ui",
 ]
@@ -2370,7 +2372,7 @@ name = "unidb-ui"
 version = "0.1.0"
 dependencies = [
  "relm4",
- "unidb-core",
+ "unidb-app",
 ]
 
 [[package]]

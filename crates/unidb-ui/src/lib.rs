@@ -6,8 +6,8 @@ mod app;
 
 /// Starts the native application loop. Blocks until the last window closes.
 #[cfg(feature = "gui")]
-pub fn run() -> Result<(), String> {
-    app::run()
+pub fn run(service: std::sync::Arc<unidb_app::AppService>) -> Result<(), String> {
+    app::run(service)
 }
 
 /// Present when the crate is built without the `gui` feature.

@@ -9,11 +9,11 @@ description = "UniDB GTK4 and libadwaita interface"
 
 [features]
 default = []
-gui = ["dep:relm4", "dep:unidb-core"]
+gui = ["dep:relm4", "dep:unidb-app"]
 
 [dependencies]
 relm4 = { workspace = true, optional = true, features = ["libadwaita"] }
-unidb-core = { workspace = true, optional = true }
+unidb-app = { workspace = true, optional = true }
 
 [lints]
 workspace = true

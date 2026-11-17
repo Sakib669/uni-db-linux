@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "skills": {
+    "designing-gnome-ui": {
+      "source": "paresh-maheshwari/gnome-skills",
+      "commit": "07182fbddec1ecfa296502f50f092f92ce454041",
+      "sourceType": "github",
+      "skillPath": "skills/designing-gnome-ui/SKILL.md",
+      "computedHash": "098b52e77110d85136fd75fb8daf0595a7b052e3be28f551785fd958ff3c3101"
+    },
+    "developing-gtk-apps": {
+      "source": "paresh-maheshwari/gnome-skills",
+      "commit": "07182fbddec1ecfa296502f50f092f92ce454041",
+      "sourceType": "github",
+      "skillPath": "skills/developing-gtk-apps/SKILL.md",
+      "computedHash": "a722977c5cf1f3e586ba4721e6f9b513129daeee170eeb89e4f53f3bac7d5ec4"
+    },
+    "gtk4-libadwaita-internals": {
+      "source": "cominotti/lushtext",
+      "commit": "f42d06f6aa63c26f8b2dd6b7e340707e19d788c0",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/gtk4-libadwaita-internals/SKILL.md",
+      "computedHash": "7b1381b041a8106a526f202f271019d4e7386c68640273c1de92f7ad558383c6"
+    },
+    "relm4-app": {
+      "source": "anson2251/relm4-app-skill",
+      "commit": "d777918ff15b03c88ae29ba3bcc2690ba661b318",
+      "sourceType": "github",
+      "skillPath": "skills/relm4-app/SKILL.md",
+      "computedHash": "b88d1f809f79839b95142461abd3fa811f2cf4877bd994b8c828d2fc0edb8112"
+    },
+    "z-rust-gtk4": {
+      "source": "victorzhuk/skills",
+      "commit": "2d2ecfcff31c1a41ecf133a16a8f895f63afa180",
+      "sourceType": "github",
+      "skillPath": "skills/rust/z-rust-gtk4/SKILL.md",
+      "computedHash": "922c9436625fae615751a2ad11f9d96d7e9c5742466ee84cba78c991bba5cfe1"
+    }
+  }
+}

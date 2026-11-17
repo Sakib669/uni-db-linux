@@ -1,5 +1,5 @@
-//! Thin binary: parse the two flags, start logging, and hand over to the
-//! interface. All orchestration lives in `unidb-app`, not here.
+//! Thin binary: parse the two flags, start logging, build the worker runtime,
+//! and hand over to the interface. All orchestration lives in `unidb-app`.
 
 use tracing_subscriber::EnvFilter;
 
@@ -27,7 +27,17 @@ fn init_logging() {
 
 #[cfg(feature = "gui")]
 fn run_interface() -> Result<(), String> {
-    unidb_ui::run()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .build()
+        .map_err(|error| format!("Could not start the worker runtime: {error}"))?;
+    let service = std::sync::Arc::new(unidb_app::AppService::bootstrap_headless(
+        runtime.handle().clone(),
+    ));
+    unidb_ui::run(service)?;
+    runtime.shutdown_background();
+    Ok(())
 }
 
 #[cfg(not(feature = "gui"))]

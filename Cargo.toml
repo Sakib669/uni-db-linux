@@ -75,11 +75,13 @@ path = "src/main.rs"
 
 [features]
 default = []
-gui = ["dep:unidb-ui", "unidb-ui/gui"]
+gui = ["dep:unidb-ui", "unidb-ui/gui", "dep:unidb-app", "dep:tokio"]
 
 [dependencies]
 unidb-core.workspace = true
+unidb-app = { workspace = true, optional = true }
 unidb-ui = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

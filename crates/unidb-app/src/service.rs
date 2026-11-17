@@ -1,20 +1,25 @@
 //! Application services: open connections through actors, run statements, and
 //! keep history and the audit log current. One actor per open connection owns
 //! the driver session and serializes commands for that connection.
+//!
+//! A service can also run without an app store (`headless`), which keeps the
+//! scaffold probe possible before the connection manager exists and keeps the
+//! future test harness free of keyring state.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::runtime::Handle;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use unidb_core::{ConnectionProfile, QueryResult, UniDbError};
-use unidb_engine::{ConnectorRegistry, Session};
+use unidb_core::{ConnectionProfile, Engine, QueryResult, UniDbError};
+use unidb_engine::{ConnectorRegistry, Session, SqliteConnector};
 use unidb_store::Store;
 
-use crate::bridge::Bridge;
+use crate::bridge::{Bridge, QueryEvent};
 
 enum Command {
     Execute {
@@ -29,11 +34,11 @@ struct ConnectionHandle {
     join: JoinHandle<()>,
 }
 
-/// The app service layer. Holds the runtime bridge, the store, the engine
-/// registry, and the live connection actors.
+/// The app service layer. Holds the runtime bridge, the optional store, the
+/// engine registry, and the live connection actors.
 pub struct AppService {
     bridge: Bridge,
-    store: Arc<Store>,
+    store: Option<Arc<Store>>,
     connectors: Arc<ConnectorRegistry>,
     connections: Mutex<HashMap<Uuid, ConnectionHandle>>,
 }
@@ -42,21 +47,51 @@ impl AppService {
     pub fn new(bridge: Bridge, store: Arc<Store>, connectors: Arc<ConnectorRegistry>) -> Self {
         Self {
             bridge,
-            store,
+            store: Some(store),
             connectors,
             connections: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn store(&self) -> &Arc<Store> {
-        &self.store
+    /// A service without a store. Used by the scaffold probe and by tests that
+    /// only exercise engine work.
+    pub fn headless(bridge: Bridge, connectors: Arc<ConnectorRegistry>) -> Self {
+        Self {
+            bridge,
+            store: None,
+            connectors,
+            connections: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The scaffold service: runtime bridge plus the engines that are built.
+    pub fn bootstrap_headless(runtime: Handle) -> Self {
+        let mut connectors = ConnectorRegistry::new();
+        connectors.register(Arc::new(SqliteConnector::new()));
+        Self::headless(Bridge::new(runtime), Arc::new(connectors))
+    }
+
+    pub fn bridge(&self) -> &Bridge {
+        &self.bridge
+    }
+
+    pub fn store(&self) -> Option<&Arc<Store>> {
+        self.store.as_ref()
+    }
+
+    /// Sends an event to the interface sink. Used by callers that own a stream.
+    pub fn emit(&self, sink: &dyn crate::bridge::EventSink<QueryEvent>, event: QueryEvent) {
+        sink.send(event);
     }
 
     /// Opens a session, starts its actor, and records the audit entry.
     pub async fn open_connection(&self, profile: &ConnectionProfile) -> Result<(), UniDbError> {
         profile.validate()?;
         let connector = self.connectors.get(profile.engine)?;
-        let password = self.store.get_password(profile.id).await?;
+        let password = match &self.store {
+            Some(store) => store.get_password(profile.id).await?,
+            None => None,
+        };
         let session = connector
             .connect(profile, password.as_ref().map(|secret| secret.as_str()))
             .await?;
@@ -70,14 +105,16 @@ impl AppService {
 
         let mut connections = self.connections.lock().await;
         connections.insert(profile.id, ConnectionHandle { sender, join });
-        self.store
-            .add_audit(
-                "connection_opened",
-                Some(profile.id),
-                "success",
-                serde_json::json!({ "engine": profile.engine.display() }),
-            )
-            .await?;
+        if let Some(store) = &self.store {
+            store
+                .add_audit(
+                    "connection_opened",
+                    Some(profile.id),
+                    "success",
+                    serde_json::json!({ "engine": profile.engine.display() }),
+                )
+                .await?;
+        }
         Ok(())
     }
 
@@ -119,35 +156,46 @@ impl AppService {
             )
         })?;
 
-        match &result {
-            Ok(query_result) => {
-                self.store
-                    .record_history(
-                        Some(connection_id),
-                        sql,
-                        query_result.elapsed_ms,
-                        Some(i64::try_from(query_result.rows.len()).unwrap_or(i64::MAX)),
-                        "success",
-                        None,
-                        None,
-                    )
-                    .await?;
-            }
-            Err(error) => {
-                self.store
-                    .record_history(
-                        Some(connection_id),
-                        sql,
-                        0,
-                        None,
-                        "error",
-                        Some(error.code()),
-                        Some(error.user_message()),
-                    )
-                    .await?;
+        if let Some(store) = &self.store {
+            match &result {
+                Ok(query_result) => {
+                    store
+                        .record_history(
+                            Some(connection_id),
+                            sql,
+                            query_result.elapsed_ms,
+                            Some(i64::try_from(query_result.rows.len()).unwrap_or(i64::MAX)),
+                            "success",
+                            None,
+                            None,
+                        )
+                        .await?;
+                }
+                Err(error) => {
+                    store
+                        .record_history(
+                            Some(connection_id),
+                            sql,
+                            0,
+                            None,
+                            "error",
+                            Some(error.code()),
+                            Some(error.user_message()),
+                        )
+                        .await?;
+                }
             }
         }
         result
+    }
+
+    /// Opens one in memory SQLite session and runs a version query. This is the
+    /// scaffold proof that the interface can reach a worker and get a result.
+    pub async fn probe_sqlite(&self) -> Result<QueryResult, UniDbError> {
+        let profile = ConnectionProfile::new("Probe", Engine::SQLite, "", ":memory:");
+        let connector = self.connectors.get(Engine::SQLite)?;
+        let mut session = connector.connect(&profile, None).await?;
+        session.execute("SELECT sqlite_version() AS version").await
     }
 
     /// Sends shutdown to the actor and waits briefly for it to finish.
@@ -162,14 +210,16 @@ impl AppService {
         let _ = handle.sender.send(Command::Shutdown).await;
         match tokio::time::timeout(Duration::from_secs(5), handle.join).await {
             Ok(Ok(())) => {
-                self.store
-                    .add_audit(
-                        "connection_closed",
-                        Some(connection_id),
-                        "success",
-                        serde_json::json!({}),
-                    )
-                    .await?;
+                if let Some(store) = &self.store {
+                    store
+                        .add_audit(
+                            "connection_closed",
+                            Some(connection_id),
+                            "success",
+                            serde_json::json!({}),
+                        )
+                        .await?;
+                }
                 Ok(())
             }
             Ok(Err(error)) => Err(

@@ -67,6 +67,7 @@ async fn save_sqlite_profile(
         ConnectionProfile::new("Local file", Engine::SQLite, "", database.to_string_lossy());
     service
         .store()
+        .expect("store")
         .save_connection(&profile, None)
         .await
         .expect("save profile");
@@ -107,6 +108,7 @@ async fn opens_a_connection_runs_statements_and_records_history() {
     let history = fixture
         .service
         .store()
+        .expect("store")
         .search_history("users", 10)
         .await
         .expect("history");
@@ -156,4 +158,16 @@ async fn close_is_idempotent() {
         .close_connection(profile.id)
         .await
         .expect("second close is a no op");
+}
+
+#[tokio::test]
+async fn probe_runs_a_real_query_through_the_service() {
+    let (fixture, _dir) = test_service().await;
+    let result = fixture
+        .service
+        .probe_sqlite()
+        .await
+        .expect("probe should run");
+    assert_eq!(result.rows.len(), 1);
+    assert!(matches!(result.rows[0][0], Value::Text(_)));
 }

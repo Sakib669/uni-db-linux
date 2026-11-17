@@ -7,3 +7,9 @@ pub mod service;
 
 pub use bridge::{Bridge, EventSink, QueryEvent};
 pub use service::AppService;
+
+/// Grid and status text for a value, kept here so the interface never formats
+/// a driver type itself.
+pub fn value_text(value: &unidb_core::Value) -> String {
+    value.display_text()
+}
