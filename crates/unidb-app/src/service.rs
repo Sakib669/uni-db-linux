@@ -17,7 +17,8 @@ use uuid::Uuid;
 
 use unidb_core::{ConnectionProfile, Engine, QueryResult, UniDbError};
 use unidb_engine::{
-    ConnectorRegistry, MySqlConnector, PostgresConnector, Session, SqliteConnector,
+    CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
+    PostgresConnector, RedisConnector, Session, SqliteConnector,
 };
 use unidb_store::Store;
 
@@ -78,6 +79,10 @@ impl AppService {
             &[Engine::MySQL, Engine::MariaDB],
             Arc::new(MySqlConnector::new()),
         );
+        connectors.register(Arc::new(RedisConnector::new()));
+        connectors.register(Arc::new(MongoConnector::new()));
+        connectors.register(Arc::new(CassandraConnector::new()));
+        connectors.register(Arc::new(MssqlConnector::new()));
         Self::headless(Bridge::new(runtime), Arc::new(connectors))
     }
 

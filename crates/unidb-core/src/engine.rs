@@ -107,7 +107,7 @@ impl Engine {
             },
             Self::MSSQL => Capabilities {
                 transactions: true,
-                cancel: true,
+                cancel: false,
                 schema_edit: true,
                 multiple_statements: true,
                 explain: true,
@@ -134,8 +134,8 @@ impl Engine {
                 explain: false,
             },
             Self::MongoDB => Capabilities {
-                transactions: true,
-                cancel: true,
+                transactions: false,
+                cancel: false,
                 schema_edit: true,
                 multiple_statements: false,
                 explain: true,
