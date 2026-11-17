@@ -31,6 +31,7 @@ sleep 1
 # Seed the demo SQLite file so the navigator proves table listing.
 rm -f /tmp/unidb-demo.db
 sqlite3 /tmp/unidb-demo.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('Ada');"
+printf 'name\nAlan Turing\nGrace Hopper\n' > /tmp/unidb-import.csv
 ./target/debug/unidb &
 APP_PID=$!
 
@@ -127,8 +128,36 @@ xdotool click 1
 sleep 2
 import -window root /app/target/designer-applied.png
 
-# Security page is the sixth sidebar row.
-xdotool mousemove $((X + 100)) $((Y + 274))
+# Transfer page is the fifth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 234))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/transfer-page.png
+
+# Pick the users table, fill the seed CSV path, and import.
+xdotool mousemove $((X + 798)) $((Y + 78))
+sleep 0.4
+xdotool click 1
+sleep 0.8
+xdotool key End
+sleep 0.2
+xdotool key Return
+sleep 0.5
+xdotool mousemove $((X + 593)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 20 "/tmp/unidb-import.csv"
+sleep 0.3
+xdotool mousemove $((X + 1064)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 3
+import -window root /app/target/transfer-imported.png
+
+# Security page is the seventh sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 314))
 sleep 0.3
 xdotool click 1
 sleep 1
