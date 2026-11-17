@@ -15,6 +15,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 7 | Table designer | in-progress | [0007](../specs/0007-table-designer.md) |
 | 8 | Import and export | in-progress | [0008](../specs/0008-import-export.md) |
 | 9 | History, saved queries, and settings | in-progress | [0009](../specs/0009-history-saved-queries-settings.md) |
+| 10 | Packaging, signing, updates, and release automation | in-progress | [0010](../specs/0010-packaging-updates.md) |
 
 ## Features
 
@@ -168,6 +169,26 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [ ] Follow up: history retention setting, folders and tags, snippets, editor preferences
 - [ ] Verify it: /check verify History, saved queries, and settings
 - [ ] Test it: /test History, saved queries, and settings
+
+### 10. Packaging, signing, updates, and release automation
+
+**Intent**: Make UniDB installable and releasable. A verified `.deb` built from the pinned container with a desktop entry, icon, AppStream metadata, and explicit dependencies. An AppImage script and Flatpak skeleton for other distributions. A release workflow on tags with gates, SBOM, checksums, optional signing, and a GitHub release. An update notice in Settings fed by a pinned release feed.
+
+**Done when**: one command produces a verified `.deb`, a `v*` tag produces a signed-when-configured GitHub release with SBOM and checksums, and Settings reports whether a newer version exists without downloading anything.
+
+- [x] Decide packaging, signing, updates, and release automation (spec): [0010](../specs/0010-packaging-updates.md)
+- [x] Build it: /develop Packaging, signing, updates, and release automation
+  - [x] Icon, desktop entry, AppStream metadata, and staged `.deb` build script
+  - [x] Package verification: metadata, contents, extraction, and `unidb --version` inside the container
+  - [x] CycloneDX SBOM generator, 502 components from cargo metadata
+  - [x] AppImage build script and Flatpak manifest skeleton
+  - [x] Release GitHub Actions workflow with gates, SBOM, checksums, optional GPG signing, and release publishing
+  - [x] Update feed parsing, version comparison, HTTP fetch with `ureq`, service check, and headless tests
+  - [x] Settings updates group with the check action, verified against a local feed
+  - [x] Packaging, signing, update, and rollback documentation
+- [ ] Follow up: arm64 matrix, signed apt repository, in app download and verification, Flathub submission
+- [ ] Verify it: /check verify Packaging, signing, updates, and release automation
+- [ ] Test it: /test Packaging, signing, updates, and release automation
 
 ## Deferred
 
