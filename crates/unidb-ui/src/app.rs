@@ -8,6 +8,7 @@ use std::sync::Arc;
 use relm4::adw::prelude::*;
 use relm4::prelude::*;
 use relm4::{adw, gtk};
+use sourceview5::prelude::*;
 use uuid::Uuid;
 
 use unidb_app::{AppService, AuditEntry, CheckStatus, SecurityReport};
@@ -79,6 +80,17 @@ struct AppModel {
     navigator_ids: Vec<Uuid>,
     navigator_connection: Option<Uuid>,
     navigator_database: Option<String>,
+    editor_connection: Option<Uuid>,
+    editor_ids: Vec<Uuid>,
+    editor_busy: bool,
+    editor_dropdown: gtk::DropDown,
+    editor_view: sourceview5::View,
+    editor_status: gtk::Label,
+    editor_error: gtk::Label,
+    editor_grid: gtk::Grid,
+    run_button: gtk::Button,
+    cancel_button: gtk::Button,
+    clear_button: gtk::Button,
 }
 
 enum AppMsg {
@@ -117,6 +129,12 @@ enum AppMsg {
     NavigatorTables(String, Box<Vec<String>>),
     NavigatorSelectDatabase(String),
     NavigatorFailed(String),
+    EditorConnectionSelected(u32),
+    RunQuery,
+    CancelQuery,
+    QueryFinished(Box<unidb_core::QueryResult>),
+    QueryFailed(String),
+    ClearResults,
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -157,6 +175,12 @@ impl std::fmt::Debug for AppMsg {
             Self::NavigatorTables(_, _) => "NavigatorTables",
             Self::NavigatorSelectDatabase(_) => "NavigatorSelectDatabase",
             Self::NavigatorFailed(_) => "NavigatorFailed",
+            Self::EditorConnectionSelected(_) => "EditorConnectionSelected",
+            Self::RunQuery => "RunQuery",
+            Self::CancelQuery => "CancelQuery",
+            Self::QueryFinished(_) => "QueryFinished",
+            Self::QueryFailed(_) => "QueryFailed",
+            Self::ClearResults => "ClearResults",
         })
     }
 }
@@ -195,6 +219,14 @@ struct ShellWidgets {
     navigator_combo: adw::ComboRow,
     navigator_databases_list: gtk::ListBox,
     navigator_tables_list: gtk::ListBox,
+    editor_dropdown: gtk::DropDown,
+    editor_view: sourceview5::View,
+    editor_status: gtk::Label,
+    editor_error: gtk::Label,
+    editor_grid: gtk::Grid,
+    run_button: gtk::Button,
+    cancel_button: gtk::Button,
+    clear_button: gtk::Button,
 }
 
 #[relm4::component]
@@ -274,6 +306,17 @@ impl SimpleComponent for AppModel {
             navigator_ids: Vec::new(),
             navigator_connection: None,
             navigator_database: None,
+            editor_connection: None,
+            editor_ids: Vec::new(),
+            editor_busy: false,
+            editor_dropdown: widgets.editor_dropdown,
+            editor_view: widgets.editor_view,
+            editor_status: widgets.editor_status,
+            editor_error: widgets.editor_error,
+            editor_grid: widgets.editor_grid,
+            run_button: widgets.run_button,
+            cancel_button: widgets.cancel_button,
+            clear_button: widgets.clear_button,
         };
 
         if let Some(error) = &model.error {
@@ -334,7 +377,10 @@ impl SimpleComponent for AppModel {
                 if index == 1 {
                     self.refresh_navigator_connections(&sender);
                 }
-                if index == 3 && !self.security_loaded {
+                if index == 2 {
+                    self.refresh_editor_connections(&sender);
+                }
+                if index == 4 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -571,6 +617,7 @@ impl SimpleComponent for AppModel {
                 self.update_controls();
                 self.populate_connections(&sender);
                 self.refresh_navigator_connections(&sender);
+                self.refresh_editor_connections(&sender);
             }
             AppMsg::ConnectionFailed(message) => {
                 self.busy = false;
@@ -636,6 +683,51 @@ impl SimpleComponent for AppModel {
                 self.show_toast(&message);
                 self.populate_tables(&[]);
             }
+            AppMsg::EditorConnectionSelected(index) => {
+                if let Some(id) = self.editor_ids.get(index as usize).copied() {
+                    self.editor_connection = Some(id);
+                }
+            }
+            AppMsg::RunQuery => self.run_query(&sender),
+            AppMsg::CancelQuery => {
+                let Some(id) = self.editor_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.cancel(id).await {
+                        Ok(()) => {
+                            sender.input(AppMsg::QueryFailed("Cancel requested.".to_string()))
+                        }
+                        Err(error) => sender.input(AppMsg::QueryFailed(format!(
+                            "Could not cancel: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::QueryFinished(result) => {
+                self.editor_busy = false;
+                self.update_controls();
+                self.render_result(&result);
+            }
+            AppMsg::QueryFailed(message) => {
+                self.editor_busy = false;
+                self.update_controls();
+                self.editor_error.set_label(&message);
+                self.editor_error.set_visible(true);
+                self.editor_status.set_label("Query failed.");
+            }
+            AppMsg::ClearResults => {
+                self.clear_grid();
+                self.editor_status.set_label("Ready.");
+                self.editor_error.set_visible(false);
+            }
         }
     }
 }
@@ -655,7 +747,8 @@ impl AppModel {
         let (name, title) = match index {
             0 => ("connections", "Connections"),
             1 => ("navigator", "Navigator"),
-            2 => ("studio", "Studio"),
+            2 => ("editor", "Editor"),
+            3 => ("studio", "Studio"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -675,6 +768,9 @@ impl AppModel {
         self.refresh_button.set_sensitive(ready && !self.busy);
         self.save_button.set_sensitive(ready && !self.busy);
         self.test_button.set_sensitive(ready && !self.busy);
+        self.run_button.set_sensitive(ready && !self.editor_busy);
+        self.cancel_button.set_sensitive(ready && self.editor_busy);
+        self.clear_button.set_sensitive(true);
     }
 
     fn load_connections(&self, sender: &ComponentSender<Self>) {
@@ -995,6 +1091,130 @@ impl AppModel {
         }
     }
 
+    fn refresh_editor_connections(&mut self, _sender: &ComponentSender<Self>) {
+        let live: Vec<ConnectionProfile> = self
+            .connections
+            .iter()
+            .filter(|profile| self.connected.contains(&profile.id))
+            .cloned()
+            .collect();
+        self.editor_ids = live.iter().map(|profile| profile.id).collect();
+        let names: Vec<&str> = live.iter().map(|profile| profile.name.as_str()).collect();
+        let model = gtk::StringList::new(&names);
+        self.editor_dropdown.set_model(Some(&model));
+        if live.is_empty() {
+            self.editor_connection = None;
+            self.editor_status.set_label("Connect to a database first.");
+        } else {
+            if self
+                .editor_connection
+                .is_none_or(|current| !self.editor_ids.contains(&current))
+            {
+                self.editor_connection = self.editor_ids.first().copied();
+            }
+            self.editor_dropdown.set_selected(0);
+            self.editor_status.set_label("Ready to run a statement.");
+        }
+        self.update_controls();
+    }
+
+    fn run_query(&mut self, sender: &ComponentSender<Self>) {
+        if self.editor_busy {
+            return;
+        }
+        let Some(connection_id) = self.editor_connection else {
+            self.show_toast("Choose a live connection first.");
+            return;
+        };
+        let Some(service) = &self.service else {
+            return;
+        };
+        let buffer = self.editor_view.buffer();
+        let sql = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .to_string();
+        if sql.trim().is_empty() {
+            self.show_toast("Write a statement first.");
+            return;
+        }
+        self.editor_busy = true;
+        self.editor_error.set_visible(false);
+        self.editor_status.set_label("Running...");
+        self.update_controls();
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.handle.spawn(async move {
+            match service.execute(connection_id, &sql).await {
+                Ok(result) => sender.input(AppMsg::QueryFinished(Box::new(result))),
+                Err(error) => sender.input(AppMsg::QueryFailed(format!(
+                    "{} ({})",
+                    error.user_message(),
+                    error.code()
+                ))),
+            }
+        });
+    }
+
+    fn clear_grid(&self) {
+        while let Some(child) = self.editor_grid.first_child() {
+            self.editor_grid.remove(&child);
+        }
+    }
+
+    fn render_result(&self, result: &unidb_core::QueryResult) {
+        self.clear_grid();
+        self.editor_error.set_visible(false);
+        if result.columns.is_empty() {
+            self.editor_status.set_label(&format!(
+                "Statement completed. {} rows affected in {} ms.",
+                result.affected_rows.unwrap_or(0),
+                result.elapsed_ms
+            ));
+            return;
+        }
+        let shown = result.rows.len().min(500);
+        for (column_index, column) in result.columns.iter().enumerate() {
+            let header = gtk::Label::new(Some(&column.name));
+            header.set_xalign(0.0);
+            header.add_css_class("heading");
+            header.set_tooltip_text(Some(&column.type_name));
+            self.editor_grid
+                .attach(&header, column_index as i32, 0, 1, 1);
+        }
+        for (row_index, row) in result.rows.iter().take(shown).enumerate() {
+            for (column_index, value) in row.iter().enumerate() {
+                let text = if value.is_null() {
+                    "NULL".to_string()
+                } else {
+                    unidb_app::value_text(value)
+                };
+                let cell = gtk::Label::new(Some(&text));
+                cell.set_xalign(0.0);
+                cell.set_selectable(true);
+                cell.add_css_class("unidb-mono");
+                if value.is_null() {
+                    cell.add_css_class("unidb-muted");
+                }
+                self.editor_grid
+                    .attach(&cell, column_index as i32, (row_index + 1) as i32, 1, 1);
+            }
+        }
+        let suffix = if result.rows.len() > shown {
+            format!(" Showing the first {shown} of {} rows.", result.rows.len())
+        } else {
+            String::new()
+        };
+        self.editor_status.set_label(&format!(
+            "{} row{}, {} column{} in {} ms.{}",
+            result.rows.len(),
+            plural(result.rows.len()),
+            result.columns.len(),
+            plural(result.columns.len()),
+            result.elapsed_ms,
+            suffix
+        ));
+    }
+
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
         let Some(service) = &self.service else {
             return;
@@ -1081,6 +1301,10 @@ impl AppModel {
             }
         }
     }
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 fn status_style(status: CheckStatus) -> (&'static str, &'static str) {
@@ -1305,6 +1529,129 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     connections_stack.add_named(&list_page_content, Some("list"));
     connections_stack.add_named(&form_page_content, Some("form"));
 
+    // Editor page.
+    let editor_status = gtk::Label::builder()
+        .label("Connect to a database first.")
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    let editor_error = gtk::Label::builder()
+        .label("")
+        .xalign(0.0)
+        .wrap(true)
+        .visible(false)
+        .build();
+    editor_error.add_css_class("status-fail");
+    let editor_grid = gtk::Grid::new();
+    editor_grid.set_row_spacing(6);
+    editor_grid.set_column_spacing(18);
+    editor_grid.set_margin_all(12);
+    let editor_grid_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .vexpand(true)
+        .child(&editor_grid)
+        .build();
+    let results_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    results_box.set_margin_top(8);
+    results_box.set_margin_bottom(8);
+    results_box.set_margin_start(12);
+    results_box.set_margin_end(12);
+    results_box.append(&editor_status);
+    results_box.append(&editor_error);
+    results_box.append(&editor_grid_scroll);
+    let results_scroll = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .child(&results_box)
+        .build();
+
+    let editor_buffer = sourceview5::Buffer::new(None::<&gtk::TextTagTable>);
+    if let Some(language) = sourceview5::LanguageManager::default().language("sql") {
+        editor_buffer.set_language(Some(&language));
+    }
+    editor_buffer.set_highlight_syntax(true);
+    editor_buffer.set_highlight_matching_brackets(true);
+    if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme("Adwaita") {
+        editor_buffer.set_style_scheme(Some(&scheme));
+    }
+    let editor_view = sourceview5::View::with_buffer(&editor_buffer);
+    editor_view.set_monospace(true);
+    editor_view.set_show_line_numbers(true);
+    editor_view.set_auto_indent(true);
+    editor_view.set_tab_width(4);
+    editor_view.set_wrap_mode(gtk::WrapMode::None);
+    editor_view.set_top_margin(8);
+    editor_view.set_bottom_margin(8);
+    editor_view.set_left_margin(8);
+    editor_view.set_hexpand(true);
+    editor_view.set_vexpand(true);
+    {
+        let sender = sender.clone();
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(move |_, key, _, state| {
+            if key == gtk::gdk::Key::Return && state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+            {
+                sender.input(AppMsg::RunQuery);
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        editor_view.add_controller(keys);
+    }
+    let editor_scroll = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .child(&editor_view)
+        .build();
+    let editor_paned = gtk::Paned::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .start_child(&editor_scroll)
+        .end_child(&results_scroll)
+        .position(300)
+        .resize_start_child(true)
+        .shrink_start_child(false)
+        .resize_end_child(true)
+        .shrink_end_child(false)
+        .vexpand(true)
+        .build();
+
+    let editor_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    editor_dropdown.set_hexpand(true);
+    {
+        let sender = sender.clone();
+        editor_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::EditorConnectionSelected(dropdown.selected()));
+        });
+    }
+    let run_button = gtk::Button::with_label("Run");
+    run_button.add_css_class("suggested-action");
+    run_button.set_tooltip_text(Some("Run the statement (Ctrl+Enter)"));
+    {
+        let sender = sender.clone();
+        run_button.connect_clicked(move |_| sender.input(AppMsg::RunQuery));
+    }
+    let cancel_button = gtk::Button::with_label("Cancel");
+    cancel_button.set_sensitive(false);
+    {
+        let sender = sender.clone();
+        cancel_button.connect_clicked(move |_| sender.input(AppMsg::CancelQuery));
+    }
+    let clear_button = gtk::Button::with_label("Clear results");
+    {
+        let sender = sender.clone();
+        clear_button.connect_clicked(move |_| sender.input(AppMsg::ClearResults));
+    }
+    let editor_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    editor_toolbar.set_margin_all(10);
+    editor_toolbar.append(&editor_dropdown);
+    editor_toolbar.append(&run_button);
+    editor_toolbar.append(&cancel_button);
+    editor_toolbar.append(&clear_button);
+    let editor_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    editor_page.append(&editor_toolbar);
+    editor_page.append(&editor_paned);
+
     // Navigator page.
     let navigator_stack = gtk::Stack::new();
     navigator_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
@@ -1388,6 +1735,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     page_stack.add_named(&connections_stack, Some("connections"));
     page_stack.add_named(&navigator_stack, Some("navigator"));
+    page_stack.add_named(&editor_page, Some("editor"));
     page_stack.add_named(&studio_page, Some("studio"));
     page_stack.add_named(&security_scroll, Some("security"));
 
@@ -1398,6 +1746,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     for (icon, label) in [
         ("network-server-symbolic", "Connections"),
         ("view-list-symbolic", "Navigator"),
+        ("utilities-terminal-symbolic", "Editor"),
         ("utilities-terminal-symbolic", "Studio"),
         ("security-high-symbolic", "Security"),
     ] {
@@ -1498,6 +1847,14 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         navigator_combo,
         navigator_databases_list,
         navigator_tables_list,
+        editor_dropdown,
+        editor_view,
+        editor_status,
+        editor_error,
+        editor_grid,
+        run_button,
+        cancel_button,
+        clear_button,
     }
 }
 

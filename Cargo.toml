@@ -68,6 +68,7 @@ zeroize = { version = "1", features = ["derive"] }
 gtk4 = "0.11"
 libadwaita = "0.9"
 relm4 = { version = "0.11", default-features = false, features = ["macros", "libadwaita", "gnome_46"] }
+sourceview5 = "0.11"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
