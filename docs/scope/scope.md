@@ -10,6 +10,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 2 | Engine layer | in-progress | [0002](../specs/0002-engine-layer.md) |
 | 3 | App store and security screens | in-progress | [0003](../specs/0003-app-store-security.md) |
 | 4 | Design system and app shell | in-progress | [0004](../specs/0004-design-system-shell.md) |
+| 5 | Connection manager and navigator | in-progress | [0005](../specs/0005-connection-manager.md) |
 
 ## Features
 
@@ -72,6 +73,22 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - [x] Screenshots in `docs/evidence/` for studio, security, and startup failure
 - [ ] Verify it: /check verify Design system and app shell
 - [ ] Test it: /test Design system and app shell
+
+### 5. Connection manager and navigator
+
+**Intent**: Turn saved profiles into the app's entry point. Add, test, save, edit, delete, connect, and disconnect a database connection from the sidebar, in details or URL mode, with encrypted passwords and audit entries. The database navigator loads databases and tables lazily after connect.
+
+**Done when**: a user can create a connection from the form or a URL, test it, save it, see it in the list, connect and disconnect, edit and delete it, all persisted across restarts and audited. After connect, the navigator lists databases and lazily lists tables.
+
+- [x] Decide the connection manager (spec): [0005](../specs/0005-connection-manager.md)
+- [ ] Build it: /develop Connection manager and navigator
+  - [x] URL parsing in core with per scheme tests (17 core unit tests pass)
+  - [x] Connections section with saved list, empty state, live badge, toast feedback
+  - [x] New and edit form in details or URL mode with test, save, cancel, validation toasts
+  - [x] Connect, disconnect, delete with audit entries; verified through the UI save flow screenshot
+  - [ ] Navigator: schema contract and lazy database and table tree
+- [ ] Verify it: /check verify Connection manager and navigator
+- [ ] Test it: /test Connection manager and navigator
 
 ## Deferred
 
