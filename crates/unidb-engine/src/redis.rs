@@ -164,6 +164,39 @@ impl Session for RedisSession {
             .map_err(redis_error)?;
         Ok(())
     }
+
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        Ok(vec!["0".to_string()])
+    }
+
+    async fn list_tables(&mut self, _database: &str) -> Result<Vec<String>, UniDbError> {
+        let reply: RedisValue = redis::cmd("SCAN")
+            .arg(0)
+            .arg("COUNT")
+            .arg(200)
+            .query_async(&mut self.connection)
+            .await
+            .map_err(redis_error)?;
+        let mut keys = Vec::new();
+        if let RedisValue::Array(parts) = reply
+            && let Some(RedisValue::Array(items)) = parts.get(1)
+        {
+            for item in items {
+                keys.push(redis_value_text(item));
+            }
+        }
+        keys.sort();
+        Ok(keys)
+    }
+}
+
+fn redis_value_text(value: &RedisValue) -> String {
+    match value {
+        RedisValue::BulkString(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        RedisValue::SimpleString(text) => text.clone(),
+        RedisValue::Int(number) => number.to_string(),
+        other => format!("{other:?}"),
+    }
 }
 
 fn redis_error(error: redis::RedisError) -> UniDbError {

@@ -110,6 +110,7 @@ impl Connector for MySqlConnector {
             capabilities: profile.engine.capabilities(),
             read_only: profile.read_only,
             connection_id,
+            database: profile.database.clone(),
         }))
     }
 }
@@ -120,6 +121,7 @@ pub struct MySqlSession {
     capabilities: Capabilities,
     read_only: bool,
     connection_id: u64,
+    database: String,
 }
 
 #[async_trait]
@@ -231,6 +233,28 @@ impl Session for MySqlSession {
                 )
             })?;
         Ok(())
+    }
+
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        Ok(vec![self.database.clone()])
+    }
+
+    async fn list_tables(&mut self, database: &str) -> Result<Vec<String>, UniDbError> {
+        if database != self.database {
+            return Err(UniDbError::new(
+                "database_switch_unsupported",
+                ErrorCategory::Unsupported,
+                "Switching databases is not available in this build; reconnect to the other database",
+            ));
+        }
+        sqlx::query_scalar::<_, String>(
+            "SELECT CONCAT(table_schema, '.', table_name) FROM information_schema.tables
+             WHERE table_schema = ? ORDER BY 1",
+        )
+        .bind(database)
+        .fetch_all(&mut *self.connection)
+        .await
+        .map_err(|error| driver_error("schema_query_failed", "Could not list the tables", error))
     }
 }
 

@@ -75,7 +75,8 @@ impl Connector for MongoConnector {
                 )
                 .with_source(error)
             })?;
-        let database = client.database(&Self::database(profile));
+        let database_name = Self::database(profile);
+        let database = client.database(&database_name);
         database
             .run_command(doc! { "ping": 1 })
             .await
@@ -92,6 +93,7 @@ impl Connector for MongoConnector {
             database,
             capabilities: Engine::MongoDB.capabilities(),
             read_only: profile.read_only,
+            database_name,
         }))
     }
 }
@@ -101,6 +103,7 @@ pub struct MongoSession {
     database: Database,
     capabilities: Capabilities,
     read_only: bool,
+    database_name: String,
 }
 
 #[async_trait]
@@ -172,6 +175,23 @@ impl Session for MongoSession {
             ErrorCategory::Unsupported,
             "MongoDB transactions are not available in this build",
         ))
+    }
+
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        self.client.list_database_names().await.map_err(|error| {
+            UniDbError::internal("Could not list the MongoDB databases").with_source(error)
+        })
+    }
+
+    async fn list_tables(&mut self, database: &str) -> Result<Vec<String>, UniDbError> {
+        let _ = &self.database_name;
+        self.client
+            .database(database)
+            .list_collection_names()
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not list the MongoDB collections").with_source(error)
+            })
     }
 }
 

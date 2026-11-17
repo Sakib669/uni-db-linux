@@ -116,6 +116,7 @@ impl Connector for PostgresConnector {
             capabilities: profile.engine.capabilities(),
             read_only: profile.read_only,
             backend_pid,
+            database: profile.database.clone(),
         }))
     }
 }
@@ -126,6 +127,7 @@ pub struct PostgresSession {
     capabilities: Capabilities,
     read_only: bool,
     backend_pid: i32,
+    database: String,
 }
 
 #[async_trait]
@@ -232,6 +234,28 @@ impl Session for PostgresSession {
                 )
             })?;
         Ok(())
+    }
+
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        Ok(vec![self.database.clone()])
+    }
+
+    async fn list_tables(&mut self, database: &str) -> Result<Vec<String>, UniDbError> {
+        if database != self.database {
+            return Err(UniDbError::new(
+                "database_switch_unsupported",
+                ErrorCategory::Unsupported,
+                "Switching databases is not available in this build; reconnect to the other database",
+            ));
+        }
+        sqlx::query_scalar::<_, String>(
+            "SELECT table_schema || '.' || table_name FROM information_schema.tables
+             WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+             ORDER BY 1",
+        )
+        .fetch_all(&mut *self.connection)
+        .await
+        .map_err(|error| driver_error("schema_query_failed", "Could not list the tables", error))
     }
 }
 

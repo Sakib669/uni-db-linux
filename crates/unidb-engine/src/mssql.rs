@@ -197,6 +197,49 @@ impl Session for MssqlSession {
             .map_err(mssql_error)?;
         Ok(())
     }
+
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        let rows = self
+            .client
+            .simple_query("SELECT name FROM sys.databases ORDER BY name")
+            .await
+            .map_err(mssql_error)?
+            .into_first_result()
+            .await
+            .map_err(mssql_error)?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| row.get::<&str, _>(0).map(str::to_string))
+            .collect())
+    }
+
+    async fn list_tables(&mut self, database: &str) -> Result<Vec<String>, UniDbError> {
+        if !database
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(UniDbError::new(
+                "schema_database_invalid",
+                ErrorCategory::Unsupported,
+                "The database name contains unsupported characters",
+            ));
+        }
+        let statement = format!(
+            "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM [{database}].INFORMATION_SCHEMA.TABLES ORDER BY 1"
+        );
+        let rows = self
+            .client
+            .simple_query(statement)
+            .await
+            .map_err(mssql_error)?
+            .into_first_result()
+            .await
+            .map_err(mssql_error)?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| row.get::<&str, _>(0).map(str::to_string))
+            .collect())
+    }
 }
 
 fn mssql_error(error: TiberiusError) -> UniDbError {

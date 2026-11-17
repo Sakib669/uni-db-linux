@@ -201,6 +201,56 @@ impl Session for CassandraSession {
             "CQL does not support SQL style transactions",
         ))
     }
+
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        let result = self
+            .session
+            .query_unpaged("SELECT keyspace_name FROM system_schema.keyspaces", &[])
+            .await
+            .map_err(cql_schema_error)?;
+        let mut names = text_column(result)?;
+        names.sort();
+        Ok(names)
+    }
+
+    async fn list_tables(&mut self, database: &str) -> Result<Vec<String>, UniDbError> {
+        let result = self
+            .session
+            .query_unpaged(
+                "SELECT table_name FROM system_schema.tables WHERE keyspace_name = ?",
+                (database,),
+            )
+            .await
+            .map_err(cql_schema_error)?;
+        let mut names = text_column(result)?;
+        names.sort();
+        Ok(names)
+    }
+}
+
+fn cql_schema_error(error: scylla::errors::ExecutionError) -> UniDbError {
+    UniDbError::internal("Could not read the Cassandra schema").with_source(error)
+}
+
+fn text_column(
+    result: scylla::response::query_result::QueryResult,
+) -> Result<Vec<String>, UniDbError> {
+    let rows_result = result.into_rows_result().map_err(|error| {
+        UniDbError::internal("Could not read the Cassandra schema rows").with_source(error)
+    })?;
+    let iterator = rows_result.rows::<Row>().map_err(|error| {
+        UniDbError::internal("Could not read the Cassandra schema columns").with_source(error)
+    })?;
+    let mut names = Vec::new();
+    for row in iterator {
+        let row = row.map_err(|error| {
+            UniDbError::internal("Could not read a Cassandra schema row").with_source(error)
+        })?;
+        if let Some(Some(CqlValue::Text(name) | CqlValue::Ascii(name))) = row.columns.first() {
+            names.push(name.clone());
+        }
+    }
+    Ok(names)
 }
 
 fn cql_to_value(value: CqlValue) -> Value {

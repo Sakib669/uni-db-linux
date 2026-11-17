@@ -65,6 +65,9 @@ async fn redis_runs_commands_and_maps_replies() {
     assert_eq!(result.rows, vec![vec![Value::Text("hello".to_string())]]);
 
     session.execute("RPUSH numbers 1 2 3").await.expect("push");
+    let keys = session.list_tables("0").await.expect("keys");
+    assert!(keys.contains(&"greeting".to_string()), "{keys:?}");
+
     let list = session.execute("LRANGE numbers 0 -1").await.expect("range");
     assert_eq!(
         list.rows,
@@ -141,6 +144,13 @@ async fn mongodb_runs_json_commands() {
     let Value::Json(reply) = &find.rows[0][0] else {
         panic!("expected a JSON reply");
     };
+    let databases = session.list_databases().await.expect("databases");
+    assert!(!databases.is_empty(), "at least one database exists");
+    session
+        .list_tables("admin")
+        .await
+        .expect("admin collections are listable");
+
     let batch = reply
         .pointer("/cursor/firstBatch")
         .and_then(serde_json::Value::as_array)

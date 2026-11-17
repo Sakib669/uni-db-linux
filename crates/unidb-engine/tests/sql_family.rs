@@ -120,6 +120,13 @@ async fn postgres_connects_and_returns_typed_rows() {
     assert_eq!(result.rows[0][1], Value::Text("Ada".to_string()));
     assert_eq!(result.rows[0][2], Value::Float(9.5));
     assert_eq!(result.rows[0][3], Value::Bool(true));
+
+    assert_eq!(
+        session.list_databases().await.expect("databases"),
+        vec!["unidb".to_string()]
+    );
+    let tables = session.list_tables("unidb").await.expect("tables");
+    assert!(tables.iter().any(|table| table == "public.t"), "{tables:?}");
 }
 
 #[tokio::test]
@@ -174,6 +181,13 @@ async fn mysql_connects_and_returns_typed_rows() {
     assert_eq!(result.rows[0][0], Value::Int(1));
     assert_eq!(result.rows[0][1], Value::Text("Ada".to_string()));
     assert_eq!(result.rows[0][2], Value::Float(9.5));
+
+    assert_eq!(
+        session.list_databases().await.expect("databases"),
+        vec!["unidb".to_string()]
+    );
+    let tables = session.list_tables("unidb").await.expect("tables");
+    assert!(tables.iter().any(|table| table == "unidb.t"), "{tables:?}");
 }
 
 #[tokio::test]

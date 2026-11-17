@@ -177,6 +177,21 @@ impl Session for SqliteSession {
             .map_err(|error| sqlite_error("Could not roll back the transaction", error))?;
         Ok(())
     }
+
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        Ok(vec!["main".to_string()])
+    }
+
+    async fn list_tables(&mut self, _database: &str) -> Result<Vec<String>, UniDbError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT name FROM sqlite_master
+             WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
+        .fetch_all(&mut *self.connection)
+        .await
+        .map_err(|error| sqlite_error("Could not list the SQLite tables", error))
+    }
 }
 
 impl SqliteSession {

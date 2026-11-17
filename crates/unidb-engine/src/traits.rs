@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use unidb_core::{Capabilities, ConnectionProfile, Engine, QueryResult, UniDbError};
+use unidb_core::{Capabilities, ConnectionProfile, Engine, ErrorCategory, QueryResult, UniDbError};
 
 #[async_trait]
 pub trait Connector: Send + Sync {
@@ -45,6 +45,24 @@ pub trait Session: Send {
     async fn commit(&mut self) -> Result<(), UniDbError>;
 
     async fn rollback(&mut self) -> Result<(), UniDbError>;
+
+    /// Database or keyspace names for the navigator.
+    async fn list_databases(&mut self) -> Result<Vec<String>, UniDbError> {
+        Err(UniDbError::new(
+            "schema_unsupported",
+            ErrorCategory::Unsupported,
+            "This engine does not support browsing yet",
+        ))
+    }
+
+    /// Tables, collections, or keys inside the selected database.
+    async fn list_tables(&mut self, _database: &str) -> Result<Vec<String>, UniDbError> {
+        Err(UniDbError::new(
+            "schema_unsupported",
+            ErrorCategory::Unsupported,
+            "This engine does not support browsing yet",
+        ))
+    }
 }
 
 /// Maps an engine to its connector. Engines are registered as they are built,

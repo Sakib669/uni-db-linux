@@ -115,3 +115,22 @@ async fn cancel_is_reported_as_unsupported_for_sqlite() {
     let error = session.cancel().await.expect_err("sqlite cannot cancel");
     assert_eq!(error.code(), "cancel_unsupported");
 }
+
+#[tokio::test]
+async fn lists_the_sqlite_schema() {
+    let connector = SqliteConnector::new();
+    let mut session = connector
+        .connect(&memory_profile(false), None)
+        .await
+        .expect("connect");
+    session
+        .execute("CREATE TABLE users (id INTEGER, name TEXT)")
+        .await
+        .expect("create");
+    assert_eq!(
+        session.list_databases().await.expect("databases"),
+        vec!["main"]
+    );
+    let tables = session.list_tables("main").await.expect("tables");
+    assert!(tables.contains(&"users".to_string()), "{tables:?}");
+}
