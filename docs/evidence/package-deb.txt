@@ -1,0 +1,64 @@
+UniDB 0.1.0 .deb verification
+date: 2026-11-17T15:34:31Z
+package: unidb_0.1.0_amd64.deb
+
+== dpkg-deb -I ==
+ new Debian package, version 2.0.
+ size 7976572 bytes: control archive=648 bytes.
+     631 bytes,    15 lines      control
+ Package: unidb
+ Version: 0.1.0
+ Section: database
+ Priority: optional
+ Architecture: amd64
+ Maintainer: Sakib <sakib@example.com>
+ Installed-Size: 34668
+ Depends: libc6, libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5), libgtksourceview-5-0, libglib2.0-0
+ Recommends: xdg-utils
+ Homepage: https://github.com/Sakib669/uni-db-linux
+ Description: Native database studio for Linux
+  UniDB is a GTK4 database studio for SQLite, PostgreSQL, CockroachDB,
+  MySQL, MariaDB, Redis, MongoDB, Cassandra, and MSSQL. It includes a
+  navigator, a SQL editor with results, a table designer, CSV and JSON
+  transfer, history, saved queries, and a security report.
+
+== dpkg-deb -c ==
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/bin/
+-rwxr-xr-x root/root  35484936 2026-11-17 21:34 ./usr/bin/unidb
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/share/
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/share/applications/
+-rw-r--r-- root/root       358 2026-11-17 21:34 ./usr/share/applications/io.github.sakib669.UniDB.desktop
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/share/icons/
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/share/icons/hicolor/
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/share/icons/hicolor/scalable/
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/share/icons/hicolor/scalable/apps/
+-rw-r--r-- root/root       844 2026-11-17 21:34 ./usr/share/icons/hicolor/scalable/apps/io.github.sakib669.UniDB.svg
+drwxrwxr-x root/root         0 2026-11-17 21:34 ./usr/share/metainfo/
+-rw-r--r-- root/root      1493 2026-11-17 21:34 ./usr/share/metainfo/io.github.sakib669.UniDB.metainfo.xml
+
+== extracted binary ==
+unidb 0.1.0
+
+== shared libraries ==
+	linux-vdso.so.1 (0x000077bf71595000)
+	libgtksourceview-5.so.0 => /lib/x86_64-linux-gnu/libgtksourceview-5.so.0 (0x000077bf6fb09000)
+	libgtk-4.so.1 => /lib/x86_64-linux-gnu/libgtk-4.so.1 (0x000077bf6efc1000)
+	libgio-2.0.so.0 => /lib/x86_64-linux-gnu/libgio-2.0.so.0 (0x000077bf6edf1000)
+	libgobject-2.0.so.0 => /lib/x86_64-linux-gnu/libgobject-2.0.so.0 (0x000077bf6ed8e000)
+	libglib-2.0.so.0 => /lib/x86_64-linux-gnu/libglib-2.0.so.0 (0x000077bf6ec45000)
+	libadwaita-1.so.0 => /lib/x86_64-linux-gnu/libadwaita-1.so.0 (0x000077bf6ea07000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000077bf71558000)
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x000077bf6e91e000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x000077bf6e70b000)
+	/lib64/ld-linux-x86-64.so.2 (0x000077bf71597000)
+	libfribidi.so.0 => /lib/x86_64-linux-gnu/libfribidi.so.0 (0x000077bf7153a000)
+	libpangocairo-1.0.so.0 => /lib/x86_64-linux-gnu/libpangocairo-1.0.so.0 (0x000077bf71529000)
+	libpango-1.0.so.0 => /lib/x86_64-linux-gnu/libpango-1.0.so.0 (0x000077bf6e69e000)
+	libgdk_pixbuf-2.0.so.0 => /lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so.0 (0x000077bf6e670000)
+	libcairo.so.2 => /lib/x86_64-linux-gnu/libcairo.so.2 (0x000077bf6e52c000)
+	libxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x000077bf6e34a000)
+	libpangoft2-1.0.so.0 => /lib/x86_64-linux-gnu/libpangoft2-1.0.so.0 (0x000077bf6e32f000)
+	libfontconfig.so.1 => /lib/x86_64-linux-gnu/libfontconfig.so.1 (0x000077bf6e2de000)
+	libpcre2-8.so.0 => /lib/x86_64-linux-gnu/libpcre2-8.so.0 (0x000077bf6e242000)

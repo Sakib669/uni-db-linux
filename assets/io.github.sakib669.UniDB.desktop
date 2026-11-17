@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=UniDB
+GenericName=Database Studio
+Comment=Native database studio for Linux
+Exec=unidb %U
+Icon=io.github.sakib669.UniDB
+Terminal=false
+Type=Application
+Categories=Development;Database;
+Keywords=database;sql;postgres;postgresql;mysql;mariadb;sqlite;redis;mongodb;cassandra;mssql;
+StartupNotify=true
+StartupWMClass=io.github.sakib669.UniDB
