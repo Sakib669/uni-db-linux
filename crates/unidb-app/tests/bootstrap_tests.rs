@@ -145,3 +145,26 @@ async fn backup_now_creates_a_copy() {
     );
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn test_connection_reports_success_and_safe_failures() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    let good = sqlite_profile(dir.path());
+    service
+        .test_connection(&good, None)
+        .await
+        .expect("sqlite file is reachable");
+
+    let mut bad = ConnectionProfile::new("Bad", Engine::SQLite, "", "");
+    bad.database = String::new();
+    let error = service
+        .test_connection(&bad, None)
+        .await
+        .expect_err("an empty SQLite path must fail");
+    assert_eq!(error.code(), "sqlite_path_required");
+
+    service.shutdown().await;
+}

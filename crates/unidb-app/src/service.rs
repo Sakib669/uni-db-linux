@@ -330,6 +330,17 @@ impl AppService {
         result
     }
 
+    /// Tests a profile without saving it or keeping the session open.
+    pub async fn test_connection(
+        &self,
+        profile: &ConnectionProfile,
+        password: Option<&str>,
+    ) -> Result<(), UniDbError> {
+        profile.validate()?;
+        let connector = self.connectors.get(profile.engine)?;
+        connector.test(profile, password).await
+    }
+
     /// Opens one in memory SQLite session and runs a version query. This is the
     /// scaffold proof that the interface can reach a worker and get a result.
     pub async fn probe_sqlite(&self) -> Result<QueryResult, UniDbError> {
