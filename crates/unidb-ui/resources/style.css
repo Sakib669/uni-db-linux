@@ -1,0 +1,40 @@
+/* UniDB design tokens.
+ *
+ * Only the accent is mapped onto libadwaita named colors so light, dark, and
+ * high contrast themes keep working. Surfaces are never hardcoded. */
+
+@define-color accent_bg_color #0D9488;
+@define-color accent_color #0D9488;
+@define-color accent_fg_color #ffffff;
+
+.unidb-brand {
+    color: #0D9488;
+    font-weight: 800;
+}
+
+.unidb-secondary {
+    color: #6366F1;
+}
+
+.status-pass {
+    color: #15803d;
+    font-weight: 700;
+}
+
+.status-warn {
+    color: #b45309;
+    font-weight: 700;
+}
+
+.status-fail {
+    color: #b91c1c;
+    font-weight: 700;
+}
+
+.unidb-mono {
+    font-family: monospace;
+}
+
+.unidb-muted {
+    color: alpha(currentColor, 0.7);
+}

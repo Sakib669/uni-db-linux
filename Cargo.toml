@@ -66,7 +66,7 @@ zeroize = { version = "1", features = ["derive"] }
 # GUI stack. Optional, activated by the root `gui` feature.
 gtk4 = "0.11"
 libadwaita = "0.9"
-relm4 = "0.11"
+relm4 = { version = "0.11", default-features = false, features = ["macros", "libadwaita", "gnome_46"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
