@@ -16,7 +16,9 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use unidb_core::{ConnectionProfile, Engine, QueryResult, UniDbError};
-use unidb_engine::{ConnectorRegistry, Session, SqliteConnector};
+use unidb_engine::{
+    ConnectorRegistry, MySqlConnector, PostgresConnector, Session, SqliteConnector,
+};
 use unidb_store::Store;
 
 use crate::bridge::{Bridge, QueryEvent};
@@ -68,6 +70,14 @@ impl AppService {
     pub fn bootstrap_headless(runtime: Handle) -> Self {
         let mut connectors = ConnectorRegistry::new();
         connectors.register(Arc::new(SqliteConnector::new()));
+        connectors.register_shared(
+            &[Engine::PostgreSQL, Engine::CockroachDB],
+            Arc::new(PostgresConnector::new()),
+        );
+        connectors.register_shared(
+            &[Engine::MySQL, Engine::MariaDB],
+            Arc::new(MySqlConnector::new()),
+        );
         Self::headless(Bridge::new(runtime), Arc::new(connectors))
     }
 

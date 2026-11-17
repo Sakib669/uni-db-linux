@@ -64,6 +64,19 @@ impl ConnectorRegistry {
         self
     }
 
+    /// Registers one connector under several engines. CockroachDB reuses the
+    /// PostgreSQL connector and MariaDB reuses the MySQL connector.
+    pub fn register_shared(
+        &mut self,
+        engines: &[Engine],
+        connector: Arc<dyn Connector>,
+    ) -> &mut Self {
+        for engine in engines {
+            self.connectors.insert(*engine, Arc::clone(&connector));
+        }
+        self
+    }
+
     pub fn get(&self, engine: Engine) -> Result<Arc<dyn Connector>, UniDbError> {
         self.connectors.get(&engine).cloned().ok_or_else(|| {
             unidb_core::UniDbError::new(

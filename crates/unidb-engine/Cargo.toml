@@ -10,11 +10,16 @@ description = "UniDB engine traits and database drivers"
 [dependencies]
 unidb-core.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+testcontainers.workspace = true
 
 [lints]
 workspace = true
