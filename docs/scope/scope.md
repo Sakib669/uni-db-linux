@@ -8,6 +8,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 |---|---|---|---|
 | 1 | Stack and architecture | in-progress | [0001](../specs/0001-native-gtk4-desktop-architecture/index.md) |
 | 2 | Engine layer | in-progress | [0002](../specs/0002-engine-layer.md) |
+| 3 | App store and security screens | in-progress | [0003](../specs/0003-app-store-security.md) |
 
 ## Features
 
@@ -41,6 +42,20 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - All nine engines registered in the app service bootstrap
 - [ ] Verify it: /check verify Engine layer
 - [ ] Test it: /test Engine layer
+
+### 3. App store and security screens
+
+**Intent**: Make the app's own data real. Open the SQLite store at startup with the keyring master key, keep rolling backups, detect corruption and unclean shutdowns, persist connections with encrypted passwords, and show a Security page computed from live state instead of constants.
+
+**Done when**: the app survives a restart with the same saved connections and secrets, the Security page shows the real checks and recent audit entries, a corrupt store or a missing key produces a diagnostic page with a retry, and the headless tests cover the store and service paths.
+
+- [x] Decide the app store and security screens (spec): [0003](../specs/0003-app-store-security.md)
+- [ ] Build it: /develop App store and security screens
+  - [x] Store: integrity check, five rolling backups, shutdown marker, live counts (tests pass)
+  - [x] App service: keyring bootstrap with injected provider, connection CRUD, security report, clean shutdown (5 headless tests pass)
+  - [x] Interface: Studio, Security, and startup diagnostic pages verified with container screenshots in `docs/evidence/`
+- [ ] Verify it: /check verify App store and security screens
+- [ ] Test it: /test App store and security screens
 
 ## Deferred
 

@@ -43,7 +43,13 @@ Run the native window under Xvfb (no host display or GTK packages needed):
 scripts/gtk-verify.sh
 ```
 
-That script starts Xvfb, launches UniDB, finds the window, clicks the SQLite probe button by keyboard focus, saves `target/unidb-probe.png`, and fails if the window never appeared.
+That script starts Xvfb and Openbox, launches UniDB, clicks the Studio and Security buttons, and saves `target/studio-page.png` and `target/security-page.png`.
+
+The startup diagnostic page is verified separately, with a deliberately corrupt app database:
+
+```bash
+scripts/gtk-verify-diagnostic.sh
+```
 
 ## Repository layout
 
