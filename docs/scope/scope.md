@@ -11,6 +11,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 3 | App store and security screens | in-progress | [0003](../specs/0003-app-store-security.md) |
 | 4 | Design system and app shell | in-progress | [0004](../specs/0004-design-system-shell.md) |
 | 5 | Connection manager and navigator | in-progress | [0005](../specs/0005-connection-manager.md) |
+| 6 | SQL editor and result grid | in-progress | [0006](../specs/0006-sql-editor.md) |
 
 ## Features
 
@@ -89,6 +90,25 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - [x] Navigator: schema contract on all nine engines, live SQL family tests, and the connection, database, and table browser verified with a seeded table screenshot
 - [ ] Verify it: /check verify Connection manager and navigator
 - [ ] Test it: /test Connection manager and navigator
+
+### 6. SQL editor and result grid
+
+**Intent**: The working surface. A GtkSourceView SQL editor over live connections, Run and Cancel through the connection actor, a result grid over the shared value model with null styling and truncation notes, a status line with rows and timing, error feedback, and history plus audit entries for every run.
+
+**Done when**: a user picks a live connection, writes SQL with highlighting, runs it with the button or Ctrl+Enter, sees typed results in the grid with timings, can clear results, sees errors without losing SQL, and every run lands in history and audit.
+
+- [x] Decide the editor and result grid (spec): [0006](../specs/0006-sql-editor.md)
+- [ ] Build it: /develop SQL editor and result grid
+  - [x] GtkSourceView SQL editor with syntax highlighting, monospace, line numbers, and Ctrl+Enter
+  - [x] Live connection selector, Run, Cancel, and Clear results with responsive busy state
+  - [x] Result grid over the shared value model with headers, types, null styling, 500 row cap, truncation notice, and row and column timing status
+  - [x] Error state that keeps the statement and shows the safe engine message
+  - [x] Query cancel through the actor, unsupported engines reported honestly, headless tests for cancel and audit
+  - [x] Query audit entries with outcome, elapsed time, and rows
+  - [x] Verified with a seeded SQLite query in the container screenshot
+- [ ] Follow up: virtualized grid, multi tab editor, cell copy, EXPLAIN
+- [ ] Verify it: /check verify SQL editor and result grid
+- [ ] Test it: /test SQL editor and result grid
 
 ## Deferred
 
