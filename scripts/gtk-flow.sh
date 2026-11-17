@@ -1,14 +1,38 @@
 #!/usr/bin/env bash
-# Runs inside the GTK container under xvfb-run: launches the app, captures the
-# connections list, saves a SQLite connection through the form, and captures the
-# security page.
+# Runs inside the GTK container: starts Xvfb directly (the xvfb-run wrapper has
+# been unreliable in this image), launches the app, saves a SQLite connection
+# through the form, connects, and captures the navigator and security pages.
 set -euo pipefail
+
+XAUTH=/tmp/unidb-xauth
+export DISPLAY=:99
+export XAUTHORITY="$XAUTH"
+touch "$XAUTH"
+xauth add :99 . "$(mcookie)" >/dev/null 2>&1 || true
+Xvfb :99 -screen 0 1200x800x24 -nolisten tcp -auth "$XAUTH" >/tmp/xvfb.log 2>&1 &
+XVFB_PID=$!
+cleanup() {
+    kill "$APP_PID" 2>/dev/null || true
+    kill "$XVFB_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+for _ in $(seq 1 50); do
+    xdotool getdisplaygeometry >/dev/null 2>&1 && break
+    sleep 0.2
+done
+if ! xdotool getdisplaygeometry >/dev/null 2>&1; then
+    echo "FAIL: Xvfb never became ready"
+    exit 1
+fi
 
 openbox >/dev/null 2>&1 &
 sleep 1
+# Seed the demo SQLite file so the navigator proves table listing.
+rm -f /tmp/unidb-demo.db
+sqlite3 /tmp/unidb-demo.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('Ada');"
 ./target/debug/unidb &
 APP_PID=$!
-trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
 
 for _ in $(seq 1 40); do
     WINDOW=$(xdotool search --onlyvisible --name UniDB 2>/dev/null | head -1 || true)
@@ -52,7 +76,19 @@ xdotool click 1
 sleep 2
 import -window root /app/target/connections-saved.png
 
-xdotool mousemove $((X + 100)) $((Y + 154))
+# Connect, then open the navigator.
+xdotool mousemove $((X + 872)) $((Y + 207))
+sleep 0.3
+xdotool click 1
+sleep 2
+xdotool mousemove $((X + 100)) $((Y + 114))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/navigator-page.png
+
+# Security page is the fourth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 194))
 sleep 0.3
 xdotool click 1
 sleep 1

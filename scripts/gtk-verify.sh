@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Verifies the native UI headlessly inside the pinned GTK container.
+# Verifies the native UI headlessly inside the pinned GTK container. The flow
+# script starts its own Xvfb and Openbox.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,4 +11,4 @@ docker run --rm \
     -e HOME=/tmp \
     -w /app \
     unidb-gtk-base \
-    bash -lc 'xvfb-run -a -s "-screen 0 1200x800x24" /app/scripts/gtk-flow.sh'
+    /app/scripts/gtk-flow.sh
