@@ -72,6 +72,13 @@ struct AppModel {
     url_entry: adw::EntryRow,
     save_button: gtk::Button,
     test_button: gtk::Button,
+    navigator_stack: gtk::Stack,
+    navigator_combo: adw::ComboRow,
+    navigator_databases_list: gtk::ListBox,
+    navigator_tables_list: gtk::ListBox,
+    navigator_ids: Vec<Uuid>,
+    navigator_connection: Option<Uuid>,
+    navigator_database: Option<String>,
 }
 
 enum AppMsg {
@@ -105,6 +112,11 @@ enum AppMsg {
     ConnectionFailed(String),
     DeleteConnection(Uuid),
     ConnectionDeleted(Uuid),
+    NavigatorConnectionSelected(u32),
+    NavigatorDatabases(Uuid, Box<Vec<String>>),
+    NavigatorTables(String, Box<Vec<String>>),
+    NavigatorSelectDatabase(String),
+    NavigatorFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -140,6 +152,11 @@ impl std::fmt::Debug for AppMsg {
             Self::ConnectionFailed(_) => "ConnectionFailed",
             Self::DeleteConnection(_) => "DeleteConnection",
             Self::ConnectionDeleted(_) => "ConnectionDeleted",
+            Self::NavigatorConnectionSelected(_) => "NavigatorConnectionSelected",
+            Self::NavigatorDatabases(_, _) => "NavigatorDatabases",
+            Self::NavigatorTables(_, _) => "NavigatorTables",
+            Self::NavigatorSelectDatabase(_) => "NavigatorSelectDatabase",
+            Self::NavigatorFailed(_) => "NavigatorFailed",
         })
     }
 }
@@ -174,6 +191,10 @@ struct ShellWidgets {
     url_entry: adw::EntryRow,
     save_button: gtk::Button,
     test_button: gtk::Button,
+    navigator_stack: gtk::Stack,
+    navigator_combo: adw::ComboRow,
+    navigator_databases_list: gtk::ListBox,
+    navigator_tables_list: gtk::ListBox,
 }
 
 #[relm4::component]
@@ -246,6 +267,13 @@ impl SimpleComponent for AppModel {
             url_entry: widgets.url_entry,
             save_button: widgets.save_button,
             test_button: widgets.test_button,
+            navigator_stack: widgets.navigator_stack,
+            navigator_combo: widgets.navigator_combo,
+            navigator_databases_list: widgets.navigator_databases_list,
+            navigator_tables_list: widgets.navigator_tables_list,
+            navigator_ids: Vec::new(),
+            navigator_connection: None,
+            navigator_database: None,
         };
 
         if let Some(error) = &model.error {
@@ -303,7 +331,10 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::SelectSection(index) => {
                 self.select_section(index);
-                if index == 2 && !self.security_loaded {
+                if index == 1 {
+                    self.refresh_navigator_connections(&sender);
+                }
+                if index == 3 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -539,6 +570,7 @@ impl SimpleComponent for AppModel {
                 }
                 self.update_controls();
                 self.populate_connections(&sender);
+                self.refresh_navigator_connections(&sender);
             }
             AppMsg::ConnectionFailed(message) => {
                 self.busy = false;
@@ -570,7 +602,39 @@ impl SimpleComponent for AppModel {
                 self.connections.retain(|profile| profile.id != id);
                 self.update_controls();
                 self.populate_connections(&sender);
+                self.refresh_navigator_connections(&sender);
                 self.show_toast("Connection deleted.");
+            }
+            AppMsg::NavigatorConnectionSelected(index) => {
+                if let Some(id) = self.navigator_ids.get(index as usize).copied() {
+                    self.navigator_connection = Some(id);
+                    self.navigator_database = None;
+                    self.load_navigator_databases(id, &sender);
+                }
+            }
+            AppMsg::NavigatorDatabases(id, databases) => {
+                self.navigator_connection = Some(id);
+                self.populate_databases(&databases, &sender);
+                if let Some(first) = databases.first().cloned() {
+                    self.navigator_database = Some(first.clone());
+                    self.load_navigator_tables(id, &first, &sender);
+                } else {
+                    self.navigator_database = None;
+                    self.populate_tables(&[]);
+                }
+            }
+            AppMsg::NavigatorTables(database, tables) => {
+                self.navigator_database = Some(database);
+                self.populate_tables(&tables);
+            }
+            AppMsg::NavigatorSelectDatabase(database) => {
+                if let Some(id) = self.navigator_connection {
+                    self.load_navigator_tables(id, &database, &sender);
+                }
+            }
+            AppMsg::NavigatorFailed(message) => {
+                self.show_toast(&message);
+                self.populate_tables(&[]);
             }
         }
     }
@@ -590,7 +654,8 @@ impl AppModel {
         self.section = index;
         let (name, title) = match index {
             0 => ("connections", "Connections"),
-            1 => ("studio", "Studio"),
+            1 => ("navigator", "Navigator"),
+            2 => ("studio", "Studio"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -813,6 +878,123 @@ impl AppModel {
         self.connections_stack.set_visible_child_name("form");
     }
 
+    fn refresh_navigator_connections(&mut self, sender: &ComponentSender<Self>) {
+        let live: Vec<ConnectionProfile> = self
+            .connections
+            .iter()
+            .filter(|profile| self.connected.contains(&profile.id))
+            .cloned()
+            .collect();
+        self.navigator_ids = live.iter().map(|profile| profile.id).collect();
+        for row in drain_rows(&self.navigator_databases_list) {
+            self.navigator_databases_list.remove(&row);
+        }
+        for row in drain_rows(&self.navigator_tables_list) {
+            self.navigator_tables_list.remove(&row);
+        }
+        if live.is_empty() {
+            self.navigator_connection = None;
+            self.navigator_database = None;
+            self.navigator_combo
+                .set_model(Some(&gtk::StringList::new(&[] as &[&str])));
+            self.navigator_stack.set_visible_child_name("empty");
+            return;
+        }
+        self.navigator_stack.set_visible_child_name("browse");
+        let names: Vec<&str> = live.iter().map(|profile| profile.name.as_str()).collect();
+        self.navigator_combo
+            .set_model(Some(&gtk::StringList::new(&names)));
+        let index = if self
+            .navigator_connection
+            .is_some_and(|current| self.navigator_ids.contains(&current))
+        {
+            self.navigator_ids
+                .iter()
+                .position(|id| Some(*id) == self.navigator_connection)
+                .unwrap_or(0) as u32
+        } else {
+            0
+        };
+        self.navigator_combo.set_selected(index);
+        if let Some(id) = self.navigator_ids.get(index as usize).copied() {
+            self.navigator_connection = Some(id);
+            self.load_navigator_databases(id, sender);
+        }
+    }
+
+    fn load_navigator_databases(&mut self, id: Uuid, sender: &ComponentSender<Self>) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.handle.spawn(async move {
+            match service.list_databases(id).await {
+                Ok(databases) => {
+                    sender.input(AppMsg::NavigatorDatabases(id, Box::new(databases)));
+                }
+                Err(error) => sender.input(AppMsg::NavigatorFailed(format!(
+                    "Could not list databases: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
+    fn load_navigator_tables(&mut self, id: Uuid, database: &str, sender: &ComponentSender<Self>) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        let database = database.to_string();
+        self.handle.spawn(async move {
+            match service.list_tables(id, &database).await {
+                Ok(tables) => sender.input(AppMsg::NavigatorTables(database, Box::new(tables))),
+                Err(error) => sender.input(AppMsg::NavigatorFailed(format!(
+                    "Could not list tables: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
+    fn populate_databases(&mut self, databases: &[String], sender: &ComponentSender<Self>) {
+        for row in drain_rows(&self.navigator_databases_list) {
+            self.navigator_databases_list.remove(&row);
+        }
+        if databases.is_empty() {
+            self.navigator_databases_list
+                .append(&plain_row("No databases reported", "view-list-symbolic"));
+        }
+        for database in databases {
+            let row = plain_row(database, "drive-harddisk-symbolic");
+            let name = database.clone();
+            let sender = sender.clone();
+            self.navigator_databases_list
+                .connect_row_activated(move |_, _| {
+                    sender.input(AppMsg::NavigatorSelectDatabase(name.clone()));
+                });
+            self.navigator_databases_list.append(&row);
+        }
+    }
+
+    fn populate_tables(&mut self, tables: &[String]) {
+        for row in drain_rows(&self.navigator_tables_list) {
+            self.navigator_tables_list.remove(&row);
+        }
+        if tables.is_empty() {
+            self.navigator_tables_list.append(&plain_row(
+                "No tables in this database",
+                "view-list-symbolic",
+            ));
+        }
+        for table in tables {
+            self.navigator_tables_list
+                .append(&plain_row(table, "x-office-spreadsheet-symbolic"));
+        }
+    }
+
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
         let Some(service) = &self.service else {
             return;
@@ -927,6 +1109,34 @@ fn tls_from_index(index: u32) -> SslMode {
         4 => SslMode::VerifyFull,
         _ => SslMode::Prefer,
     }
+}
+
+fn drain_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
+    let mut rows = Vec::new();
+    let mut child = list.first_child();
+    while let Some(widget) = child {
+        if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>() {
+            rows.push(row.clone());
+        }
+        child = widget.next_sibling();
+    }
+    rows
+}
+
+fn plain_row(label: &str, icon: &str) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_start(10);
+    content.set_margin_end(10);
+    content.append(&gtk::Image::from_icon_name(icon));
+    let text = gtk::Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    content.append(&text);
+    row.set_child(Some(&content));
+    row
 }
 
 fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) -> ShellWidgets {
@@ -1095,6 +1305,48 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     connections_stack.add_named(&list_page_content, Some("list"));
     connections_stack.add_named(&form_page_content, Some("form"));
 
+    // Navigator page.
+    let navigator_stack = gtk::Stack::new();
+    navigator_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    let navigator_empty = adw::StatusPage::builder()
+        .icon_name("view-list-symbolic")
+        .title("No live connection")
+        .description("Connect to a saved database in Connections, then open the navigator.")
+        .build();
+    let navigator_combo = adw::ComboRow::builder().title("Connection").build();
+    {
+        let sender = sender.clone();
+        navigator_combo.connect_selected_notify(move |combo| {
+            sender.input(AppMsg::NavigatorConnectionSelected(combo.selected()));
+        });
+    }
+    let databases_group = adw::PreferencesGroup::builder().title("Databases").build();
+    let navigator_databases_list = gtk::ListBox::new();
+    navigator_databases_list.set_selection_mode(gtk::SelectionMode::Single);
+    navigator_databases_list.add_css_class("boxed-list");
+    databases_group.add(&navigator_databases_list);
+    let tables_group = adw::PreferencesGroup::builder().title("Tables").build();
+    let navigator_tables_list = gtk::ListBox::new();
+    navigator_tables_list.set_selection_mode(gtk::SelectionMode::None);
+    navigator_tables_list.add_css_class("boxed-list");
+    tables_group.add(&navigator_tables_list);
+    let connection_group = adw::PreferencesGroup::builder().title("Connection").build();
+    connection_group.add(&navigator_combo);
+    let navigator_prefs = adw::PreferencesPage::new();
+    navigator_prefs.add(&connection_group);
+    navigator_prefs.add(&databases_group);
+    navigator_prefs.add(&tables_group);
+    let navigator_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&navigator_prefs)
+        .build();
+    let navigator_browse = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    navigator_browse.append(&navigator_scroll);
+    navigator_stack.add_named(&navigator_empty, Some("empty"));
+    navigator_stack.add_named(&navigator_browse, Some("browse"));
+    navigator_stack.set_visible_child_name("empty");
+
     let status_label = gtk::Label::builder()
         .label("Ready.")
         .xalign(0.0)
@@ -1135,6 +1387,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     let page_stack = gtk::Stack::new();
     page_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     page_stack.add_named(&connections_stack, Some("connections"));
+    page_stack.add_named(&navigator_stack, Some("navigator"));
     page_stack.add_named(&studio_page, Some("studio"));
     page_stack.add_named(&security_scroll, Some("security"));
 
@@ -1144,6 +1397,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     sidebar.add_css_class("navigation-sidebar");
     for (icon, label) in [
         ("network-server-symbolic", "Connections"),
+        ("view-list-symbolic", "Navigator"),
         ("utilities-terminal-symbolic", "Studio"),
         ("security-high-symbolic", "Security"),
     ] {
@@ -1240,6 +1494,10 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         url_entry,
         save_button,
         test_button,
+        navigator_stack,
+        navigator_combo,
+        navigator_databases_list,
+        navigator_tables_list,
     }
 }
 
