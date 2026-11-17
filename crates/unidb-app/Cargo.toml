@@ -1,0 +1,24 @@
+[package]
+name = "unidb-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UniDB application services, connection actors, and the UI bridge"
+
+[dependencies]
+unidb-core.workspace = true
+unidb-engine.workspace = true
+unidb-store.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
