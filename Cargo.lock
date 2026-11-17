@@ -4613,6 +4613,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "url",
  "uuid",
 ]
 
@@ -4665,6 +4666,8 @@ dependencies = [
  "relm4",
  "tokio",
  "unidb-app",
+ "unidb-core",
+ "uuid",
 ]
 
 [[package]]
