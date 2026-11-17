@@ -7,6 +7,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | # | Feature | Status | Spec |
 |---|---|---|---|
 | 1 | Stack and architecture | in-progress | [0001](../specs/0001-native-gtk4-desktop-architecture/index.md) |
+| 2 | Engine layer | in-progress | [0002](../specs/0002-engine-layer.md) |
 
 ## Features
 
@@ -25,6 +26,19 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - Code in `crates/` and `src/main.rs`
 - [ ] Verify it: /check verify Stack and architecture
 - [ ] Test it: /test Stack and architecture
+
+### 2. Engine layer
+
+**Intent**: Nine engines behind one driver contract, with the shared value model and error taxonomy. The SQL family comes first because it proves the contract against two wire protocols.
+
+**Done when**: PostgreSQL, MySQL, MariaDB, CockroachDB, Redis, MongoDB, Cassandra, and MSSQL connect and run real requests, each covered by tests against a real server where practical, and read only and cancel behavior match the engine capabilities.
+
+- [x] Decide the engine layer (spec): [0002](../specs/0002-engine-layer.md)
+- [ ] Build it: /develop Engine layer
+  - [x] SQL family: PostgreSQL, MySQL, MariaDB, and CockroachDB with live container tests (5 tests plus CockroachDB, all passing)
+  - [ ] Redis, MongoDB, Cassandra, and MSSQL connectors
+- [ ] Verify it: /check verify Engine layer
+- [ ] Test it: /test Engine layer
 
 ## Deferred
 
