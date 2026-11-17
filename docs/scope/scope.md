@@ -12,6 +12,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 4 | Design system and app shell | in-progress | [0004](../specs/0004-design-system-shell.md) |
 | 5 | Connection manager and navigator | in-progress | [0005](../specs/0005-connection-manager.md) |
 | 6 | SQL editor and result grid | in-progress | [0006](../specs/0006-sql-editor.md) |
+| 7 | Table designer | in-progress | [0007](../specs/0007-table-designer.md) |
 
 ## Features
 
@@ -109,6 +110,25 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [ ] Follow up: virtualized grid, multi tab editor, cell copy, EXPLAIN
 - [ ] Verify it: /check verify SQL editor and result grid
 - [ ] Test it: /test SQL editor and result grid
+
+### 7. Table designer
+
+**Intent**: A guided way to create and change tables. Column editor with type, nullability, default, primary key, uniqueness, and auto increment; exact DDL preview; transactional apply; dialect aware statements for SQLite, PostgreSQL, CockroachDB, MySQL, and MariaDB; edit existing tables with add, rename, and drop columns; honest unsupported state for the other engines.
+
+**Done when**: a user can create a table through the designer and see it appear in the navigator, load an existing table and add or rename or drop a column with previewed DDL, and every apply is all or nothing with clear errors.
+
+- [x] Decide the table designer (spec): [0007](../specs/0007-table-designer.md)
+- [x] Build it: /develop Table designer
+  - [x] DDL domain module with SQLite, PostgreSQL, and MySQL dialects, validation, and unit tests
+  - [x] Column introspection for the SQL engines through one session contract
+  - [x] Transactional `ApplyStatements` actor command so partial DDL cannot land
+  - [x] Designer page with connection and table selection, new table mode, column editor, SQL preview, apply, statuses, and toasts
+  - [x] Edit existing table with add, rename, and drop column generation, verified by the SQLite service test
+  - [x] Unsupported engine state and honest errors
+  - [x] Verified create and apply through the container screenshots
+- [ ] Follow up: type changes, index and foreign key editing, table rebuilds, schema diff
+- [ ] Verify it: /check verify Table designer
+- [ ] Test it: /test Table designer
 
 ## Deferred
 
