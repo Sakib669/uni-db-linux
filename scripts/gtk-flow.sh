@@ -162,6 +162,31 @@ xdotool click 1
 sleep 3
 import -window root /app/target/transfer-imported.png
 
+# Back to the editor with the imported rows, then show the chart and the plan.
+xdotool mousemove $((X + 100)) $((Y + 154))
+sleep 0.3
+xdotool click 1
+sleep 1
+xdotool mousemove $((X + 700)) $((Y + 240))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool key ctrl+a
+xdotool type --delay 20 "SELECT * FROM users;"
+sleep 0.3
+xdotool key ctrl+Return
+sleep 2
+xdotool mousemove $((X + 802)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 1
+import -window root /app/target/editor-chart.png
+xdotool mousemove $((X + 711)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/editor-explain.png
+
 # History page is the sixth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 274))
 sleep 0.3
