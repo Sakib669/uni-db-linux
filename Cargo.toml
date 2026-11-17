@@ -1,18 +1,87 @@
-[package]
-name = "unidb"
-version = "4.1.0"
-edition = "2021"
-description = "UniDB - Unified Database Studio for Linux (Postgres, MySQL, MariaDB, Cockroach, Cassandra, Redis, MongoDB, MSSQL, SQLite)"
-license = "MIT"
+[workspace]
+resolver = "3"
+members = [
+    "crates/unidb-core",
+    "crates/unidb-store",
+    "crates/unidb-engine",
+    "crates/unidb-app",
+    "crates/unidb-ui",
+]
 
-[dependencies]
-tokio = { version = "1", features = ["full"] }
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+repository = "https://github.com/Sakib669/uni-db-linux"
+authors = ["Sakib"]
+
+[workspace.dependencies]
+unidb-core = { path = "crates/unidb-core" }
+unidb-store = { path = "crates/unidb-store" }
+unidb-engine = { path = "crates/unidb-engine" }
+unidb-app = { path = "crates/unidb-app" }
+unidb-ui = { path = "crates/unidb-ui", default-features = false }
+
+async-trait = "0.1"
+aes-gcm = "0.10"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+hmac = "0.12"
+keyring = "3.6"
+rand = "0.8"
+rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-aes-gcm = "0.10"
-# Drivers are feature-gated in production; this repo ships the stable core.
-# postgres, mysql, redis, mongo, sqlite drivers are enabled via src/db/*
+sha2 = "0.10"
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "migrate",
+    "macros",
+    "uuid",
+    "chrono",
+    "rust_decimal",
+] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
+
+# GUI stack. Optional, activated by the root `gui` feature.
+gtk4 = "0.11"
+libadwaita = "0.9"
+relm4 = "0.11"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[package]
+name = "unidb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UniDB - native database studio for Linux"
 
 [[bin]]
 name = "unidb"
 path = "src/main.rs"
+
+[features]
+default = []
+gui = ["dep:unidb-ui", "unidb-ui/gui"]
+
+[dependencies]
+unidb-core.workspace = true
+unidb-ui = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

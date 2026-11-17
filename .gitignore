@@ -1,5 +1,8 @@
 target/
+.cargo-home/
 *.db
+*.db-shm
+*.db-wal
 .env
 *.log
 .DS_Store
