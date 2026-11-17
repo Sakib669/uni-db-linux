@@ -5,7 +5,7 @@
 
 ## Summary
 
-The engine layer turns a saved connection profile into a live session that returns the shared value model. This spec adds the SQL family: PostgreSQL, MySQL, MariaDB, and CockroachDB, plus the capability flags, TLS mapping, read only enforcement, cancellation, and error mapping they need. SQLite already exists. The remaining engines, Redis, MongoDB, Cassandra, and MSSQL, follow in a later spec using the same contract.
+The engine layer turns a saved connection profile into a live session that returns the shared value model. This spec adds PostgreSQL, MySQL, MariaDB, and CockroachDB as the SQL family, then Redis, MongoDB, Cassandra, and MSSQL on the same contract, completing all nine engines. It also fixes the capability flags, TLS mapping, read only enforcement, cancellation, and error mapping for every engine.
 
 ## Context
 
@@ -29,6 +29,10 @@ Spec 0001 fixed the driver contract and built SQLite as the proof. The product p
 - **AC-7**: every failure maps to `UniDbError` with the error taxonomy, a safe user message, and no SQL text in `Display`.
 - **AC-8**: integration tests start real PostgreSQL, MySQL, and MariaDB servers with testcontainers and pass in CI.
 - **AC-9**: the registry advertises only engines built into the binary, and a missing engine returns `engine_not_installed`.
+- **AC-10**: a Redis profile runs a command line and maps scalars, arrays, and maps into the shared value model, with a read command allowlist for read only sessions.
+- **AC-11**: a MongoDB profile runs a JSON command document and returns the reply as structured JSON, with a read command allowlist for read only sessions.
+- **AC-12**: a Cassandra profile connects with optional plain text auth and runs CQL, mapping CQL values into the shared value model.
+- **AC-13**: an MSSQL profile connects over TDS, runs a statement, maps column data into the shared value model, and uses SQL transactions.
 
 ## Decision
 
@@ -51,6 +55,13 @@ sqlx provides one pool and row model for both wire protocols, including TLS thro
 
 **Errors**: one mapping per driver to the taxonomy. The SQL text is never attached to the error, matching spec 0001.
 
+### Non SQL engines
+
+- **Redis 1.8**: one multiplexed connection manager per profile. A statement is a command line with quoting supported. Read only sessions allow a fixed read command allowlist. `MULTI`, `EXEC`, and `DISCARD` back the transaction methods.
+- **MongoDB 3.10**: a statement is a JSON command document, which is the honest v1 shape because MongoDB has no SQL dialect. Read only sessions allow a fixed read command allowlist. Transactions and cancellation are reported unsupported, and the capability flags reflect that.
+- **Cassandra through scylla 1.10**: plain text authentication when a username and password are present. CQL statements return rows and values. CQL has no SQL style transactions or external cancellation, and the capability flags reflect that.
+- **MSSQL through tiberius 0.13**: TDS over TCP with the encryption level mapped from the TLS mode. Certificate chain verification is limited to `trust_cert` in this build and is a follow up. Transactions use `BEGIN`, `COMMIT`, and `ROLLBACK` statements. Cancellation is reported unsupported, and the capability flags reflect that.
+
 ## Proposed stack additions
 
 | Layer | Choice | Reason |
@@ -59,6 +70,10 @@ sqlx provides one pool and row model for both wire protocols, including TLS thro
 | MySQL and MariaDB | sqlx 0.9 `mysql` feature | Same API, both protocols. |
 | TLS | sqlx `tls-rustls-ring-native-roots` | System certificate store, pure Rust, matches spec 0001. |
 | Container tests | testcontainers 0.28 | Real engine in tests, works on the GitHub runner Docker. |
+| Redis | redis 1.8 with `tokio-comp` and `connection-manager` | Async multiplexed client, command reply mapping. |
+| MongoDB | mongodb 3.10 | Official driver, JSON command execution. |
+| Cassandra | scylla 1.10 | Pure Rust CQL driver with pooling. |
+| MSSQL | tiberius 0.13 | Pure Rust TDS client, no FreeTDS. |
 
 ## Build plan
 
@@ -69,6 +84,11 @@ sqlx provides one pool and row model for both wire protocols, including TLS thro
 5. Register the new connectors in the app service bootstrap, satisfies **AC-1**, **AC-2**, **AC-9**
 6. Integration tests with testcontainers for PostgreSQL, MySQL, and MariaDB; CockroachDB through the PostgreSQL path once its container image is verified, satisfies **AC-3**, **AC-4**, **AC-8**
 7. Add the engine tests to CI and keep the SQLite suite unchanged, satisfies **AC-8**
+8. Implement the Redis session: command line parsing, reply mapping, read command allowlist, transactions, satisfies **AC-10**
+9. Implement the MongoDB session: JSON command parsing, reply mapping, read command allowlist, satisfies **AC-11**
+10. Implement the Cassandra session: connection with optional plain text auth, CQL execution, value mapping, satisfies **AC-12**
+11. Implement the MSSQL session: TDS connection with encryption mapping, statement execution, column data mapping, transactions, satisfies **AC-13**
+12. Register all nine engines in the app service bootstrap, satisfies **AC-9**
 
 ## Consequences
 
@@ -86,6 +106,10 @@ sqlx provides one pool and row model for both wire protocols, including TLS thro
 **Neutral**
 - CockroachDB and MariaDB share a connector, so an engine specific quirk has to be handled inside the shared module.
 - The value fallback marker is visible to users for exotic types until arrays are supported.
+- MongoDB takes a JSON command rather than SQL, so the editor needs an engine aware language mode later.
+- MSSQL trusts the server certificate, so a hostile network can intercept a connection whose TLS mode asked for verification until full chain verification lands.
+- Cassandra and MSSQL cannot cancel from this build, so the interface must disable the cancel control based on capability flags.
+- Redis transactions run on a multiplexed connection, so unrelated commands from the same session can join the transaction; the session must not be shared.
 
 ## Follow-up
 
