@@ -156,8 +156,54 @@ xdotool click 1
 sleep 3
 import -window root /app/target/transfer-imported.png
 
-# Security page is the seventh sidebar row.
+# History page is the sixth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 274))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/history-page.png
+
+# Save the current editor statement as a named query.
+xdotool mousemove $((X + 600)) $((Y + 321))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 25 "Recent users"
+sleep 0.3
+xdotool mousemove $((X + 895)) $((Y + 321))
+sleep 0.2
+xdotool click 1
+sleep 2
+import -window root /app/target/history-saved.png
+
+# Settings page is the seventh sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 314))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/settings-page.png
+
+# Switch to the dark scheme, capture it, then go back to the system scheme.
+xdotool mousemove $((X + 927)) $((Y + 142))
+sleep 0.3
+xdotool click 1
+sleep 0.6
+xdotool key End
+sleep 0.2
+xdotool key Return
+sleep 1
+import -window root /app/target/settings-dark.png
+xdotool mousemove $((X + 927)) $((Y + 142))
+sleep 0.3
+xdotool click 1
+sleep 0.6
+xdotool key Home
+sleep 0.2
+xdotool key Return
+sleep 1
+
+# Security page is the eighth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 354))
 sleep 0.3
 xdotool click 1
 sleep 1
