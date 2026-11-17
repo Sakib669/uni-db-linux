@@ -1,0 +1,19 @@
+[package]
+name = "unidb-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UniDB GTK4 and libadwaita interface"
+
+[features]
+default = []
+gui = ["dep:relm4", "dep:unidb-core"]
+
+[dependencies]
+relm4 = { workspace = true, optional = true, features = ["libadwaita"] }
+unidb-core = { workspace = true, optional = true }
+
+[lints]
+workspace = true
