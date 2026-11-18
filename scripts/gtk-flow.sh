@@ -210,6 +210,28 @@ xdotool click 1
 sleep 3
 import -window root /app/target/schema-erd.png
 
+# Builder page is the ninth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 394))
+sleep 0.3
+xdotool click 1
+sleep 3
+import -window root /app/target/builder-page.png
+
+# Pick the users table and preview the generated SQL.
+xdotool mousemove $((X + 1052)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 0.6
+xdotool key End
+sleep 0.2
+xdotool key Return
+sleep 1
+xdotool mousemove $((X + 757)) $((Y + 612))
+sleep 0.3
+xdotool click 1
+sleep 1
+import -window root /app/target/builder-preview.png
+
 # History page is the sixth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 274))
 sleep 0.3
@@ -263,8 +285,8 @@ sleep 0.2
 xdotool key Return
 sleep 1
 
-# Security page is the ninth sidebar row.
-xdotool mousemove $((X + 100)) $((Y + 394))
+# Security page is the tenth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 434))
 sleep 0.3
 xdotool click 1
 sleep 1
