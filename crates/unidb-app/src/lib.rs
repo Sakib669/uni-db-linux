@@ -12,6 +12,7 @@ pub use bridge::{Bridge, EventSink, QueryEvent};
 pub use paths::default_data_dir;
 pub use security::{CheckStatus, SecurityCheck, SecurityReport};
 pub use service::{AppService, ExportReport, ImportOptions, ImportReport};
+pub use unidb_core::ForeignKeyInfo;
 pub use unidb_store::AuditEntry;
 pub use unidb_store::{HistoryEntry, SavedQuery};
 pub use update::{ReleaseInfo, fetch_latest, is_newer, parse_release};

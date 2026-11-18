@@ -434,3 +434,34 @@ async fn history_saved_queries_and_settings_round_trip() {
 
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn foreign_keys_are_reported_for_a_sqlite_schema() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+    service
+        .apply_statements(
+            profile.id,
+            &[
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)".to_string(),
+                "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), title TEXT)".to_string(),
+            ],
+        )
+        .await
+        .expect("schema");
+    let keys = service
+        .foreign_keys(profile.id, "main", "posts")
+        .await
+        .expect("foreign keys");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].from_table, "posts");
+    assert_eq!(keys[0].from_column, "user_id");
+    assert_eq!(keys[0].to_table, "users");
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}

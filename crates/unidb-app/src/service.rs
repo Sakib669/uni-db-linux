@@ -17,9 +17,9 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use unidb_core::{
-    ConnectionProfile, Engine, ErrorCategory, QueryResult, SqlDialect, TableColumnInfo,
-    TransferFormat, UniDbError, coerce_value, insert_statements, parse_import, rows_to_csv,
-    rows_to_json,
+    ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo, QueryResult, SqlDialect,
+    TableColumnInfo, TransferFormat, UniDbError, coerce_value, insert_statements, parse_import,
+    rows_to_csv, rows_to_json,
 };
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
@@ -56,6 +56,11 @@ enum Command {
     ApplyStatements {
         statements: Vec<String>,
         reply: oneshot::Sender<Result<(), UniDbError>>,
+    },
+    ForeignKeys {
+        database: String,
+        table: String,
+        reply: oneshot::Sender<Result<Vec<ForeignKeyInfo>, UniDbError>>,
     },
     Shutdown,
 }
@@ -414,6 +419,28 @@ impl AppService {
         let (reply_sender, reply_receiver) = oneshot::channel();
         sender
             .send(Command::DescribeTable {
+                database: database.to_string(),
+                table: table.to_string(),
+                reply: reply_sender,
+            })
+            .await
+            .map_err(|_| connection_stopped_error())?;
+        reply_receiver
+            .await
+            .map_err(|_| connection_stopped_error())?
+    }
+
+    /// Lists the foreign keys declared on a table.
+    pub async fn foreign_keys(
+        &self,
+        connection_id: Uuid,
+        database: &str,
+        table: &str,
+    ) -> Result<Vec<ForeignKeyInfo>, UniDbError> {
+        let sender = self.connection_sender(connection_id).await?;
+        let (reply_sender, reply_receiver) = oneshot::channel();
+        sender
+            .send(Command::ForeignKeys {
                 database: database.to_string(),
                 table: table.to_string(),
                 reply: reply_sender,
@@ -923,6 +950,14 @@ impl ConnectionActor {
                 }
                 Command::ApplyStatements { statements, reply } => {
                     let result = self.apply_statements(&statements).await;
+                    let _ = reply.send(result);
+                }
+                Command::ForeignKeys {
+                    database,
+                    table,
+                    reply,
+                } => {
+                    let result = self.session.list_foreign_keys(&database, &table).await;
                     let _ = reply.send(result);
                 }
                 Command::Shutdown => break,
