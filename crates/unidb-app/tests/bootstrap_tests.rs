@@ -548,3 +548,58 @@ async fn masked_exports_hide_text_values() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn migrations_apply_once_and_track_the_ledger() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let migrations = dir.path().join("migrations");
+    std::fs::create_dir_all(&migrations).expect("migrations dir");
+    std::fs::write(
+        migrations.join("0001_create.sql"),
+        "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);",
+    )
+    .expect("write 1");
+    std::fs::write(
+        migrations.join("0002_seed.sql"),
+        "INSERT INTO notes (id, body) VALUES (1, 'hello; world');",
+    )
+    .expect("write 2");
+
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+
+    let first = service
+        .apply_migrations(profile.id, &migrations)
+        .await
+        .expect("first run");
+    assert_eq!(first.applied.len(), 2);
+    assert_eq!(first.skipped, 0);
+    let rows = service
+        .execute(profile.id, "SELECT body FROM notes WHERE id = 1")
+        .await
+        .expect("query");
+    assert_eq!(
+        rows.rows[0][0],
+        unidb_core::Value::Text("hello; world".to_string())
+    );
+
+    let second = service
+        .apply_migrations(profile.id, &migrations)
+        .await
+        .expect("second run");
+    assert!(second.applied.is_empty());
+    assert_eq!(second.skipped, 2);
+
+    let audit = service.recent_audit(20).await.expect("audit");
+    assert!(
+        audit
+            .iter()
+            .any(|entry| entry.action == "migration_applied")
+    );
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}

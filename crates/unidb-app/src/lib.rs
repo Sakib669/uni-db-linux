@@ -3,12 +3,14 @@
 //! events through one bridge.
 
 pub mod bridge;
+pub mod migrations;
 pub mod paths;
 pub mod security;
 pub mod service;
 pub mod update;
 
 pub use bridge::{Bridge, EventSink, QueryEvent};
+pub use migrations::{MigrationFile, MigrationReport, checksum, load_migrations, plan_migrations};
 pub use paths::default_data_dir;
 pub use security::{CheckStatus, SecurityCheck, SecurityReport};
 pub use service::{AppService, ExportReport, ImportOptions, ImportReport};

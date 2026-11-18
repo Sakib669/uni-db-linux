@@ -30,6 +30,7 @@ use unidb_store::{
 };
 
 use crate::bridge::{Bridge, QueryEvent};
+use crate::migrations::{load_migrations, plan_migrations};
 use crate::paths::default_data_dir;
 use crate::security::{self, SecurityReport};
 
@@ -406,6 +407,58 @@ impl AppService {
         reply_receiver
             .await
             .map_err(|_| connection_stopped_error())?
+    }
+
+    /// Applies pending numbered SQL files from a directory in one transaction
+    /// per file, recording each in the migration ledger.
+    pub async fn apply_migrations(
+        &self,
+        connection_id: Uuid,
+        dir: &Path,
+    ) -> Result<crate::migrations::MigrationReport, UniDbError> {
+        let files = load_migrations(dir)?;
+        let applied_rows = self
+            .require_store()?
+            .list_applied_migrations(connection_id)
+            .await?;
+        let applied: Vec<(String, String)> = applied_rows
+            .iter()
+            .map(|row| (row.name.clone(), row.checksum.clone()))
+            .collect();
+        let (pending, warnings) = plan_migrations(&files, &applied);
+        let mut report = crate::migrations::MigrationReport {
+            skipped: files.len() - pending.len(),
+            warnings,
+            ..crate::migrations::MigrationReport::default()
+        };
+        for file in pending {
+            let statements = unidb_core::split_statements(&file.sql);
+            if statements.is_empty() {
+                continue;
+            }
+            self.apply_statements(connection_id, &statements)
+                .await
+                .map_err(|error| {
+                    UniDbError::new(
+                        error.code(),
+                        error.category(),
+                        format!("Migration {} failed: {}", file.name, error.user_message()),
+                    )
+                    .with_detail(error.to_string())
+                })?;
+            self.require_store()?
+                .record_applied_migration(connection_id, &file.name, &file.checksum)
+                .await?;
+            self.audit_transfer(
+                "migration_applied",
+                Some(connection_id),
+                "success",
+                serde_json::json!({ "name": file.name }),
+            )
+            .await?;
+            report.applied.push(file.name);
+        }
+        Ok(report)
     }
 
     /// Generates deterministic fake rows and inserts them into a table.
