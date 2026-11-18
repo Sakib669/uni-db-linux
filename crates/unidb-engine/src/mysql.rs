@@ -240,7 +240,12 @@ impl Session for MySqlSession {
     }
 
     async fn list_tables(&mut self, database: &str) -> Result<Vec<String>, UniDbError> {
-        if database != self.database {
+        let target = if database.is_empty() {
+            self.database.as_str()
+        } else {
+            database
+        };
+        if target != self.database {
             return Err(UniDbError::new(
                 "database_switch_unsupported",
                 ErrorCategory::Unsupported,
@@ -251,7 +256,7 @@ impl Session for MySqlSession {
             "SELECT CONCAT(table_schema, '.', table_name) FROM information_schema.tables
              WHERE table_schema = ? ORDER BY 1",
         )
-        .bind(database)
+        .bind(target)
         .fetch_all(&mut *self.connection)
         .await
         .map_err(|error| driver_error("schema_query_failed", "Could not list the tables", error))

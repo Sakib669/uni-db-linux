@@ -98,17 +98,23 @@ impl Connector for PostgresConnector {
         }
 
         // CockroachDB reports this as INT8, PostgreSQL as INT4.
-        let backend_pid: i64 = sqlx::query_scalar("SELECT pg_backend_pid()::bigint")
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(|error| {
-                driver_error(
-                    "postgres_connect_failed",
-                    "Could not identify the PostgreSQL session",
-                    error,
-                )
-            })?;
+        let (backend_pid, current_db): (i64, String) =
+            sqlx::query_as("SELECT pg_backend_pid()::bigint, current_database()::text")
+                .fetch_one(&mut *connection)
+                .await
+                .map_err(|error| {
+                    driver_error(
+                        "postgres_connect_failed",
+                        "Could not identify the PostgreSQL session",
+                        error,
+                    )
+                })?;
         let backend_pid = i32::try_from(backend_pid).unwrap_or_default();
+        let database = if current_db.is_empty() {
+            profile.database.clone()
+        } else {
+            current_db
+        };
 
         Ok(Box::new(PostgresSession {
             pool,
@@ -116,7 +122,7 @@ impl Connector for PostgresConnector {
             capabilities: profile.engine.capabilities(),
             read_only: profile.read_only,
             backend_pid,
-            database: profile.database.clone(),
+            database,
         }))
     }
 }
@@ -241,7 +247,7 @@ impl Session for PostgresSession {
     }
 
     async fn list_tables(&mut self, database: &str) -> Result<Vec<String>, UniDbError> {
-        if database != self.database {
+        if !database.is_empty() && database != self.database {
             return Err(UniDbError::new(
                 "database_switch_unsupported",
                 ErrorCategory::Unsupported,

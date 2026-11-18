@@ -2351,9 +2351,10 @@ impl SimpleComponent for AppModel {
                 let sender = sender.clone();
                 self.snapshots_status
                     .set_label(&format!("Capturing snapshot for {table}..."));
+                let database = self.designer_database_for(connection_id);
                 self.handle.spawn(async move {
                     match service
-                        .create_snapshot(connection_id, "main", &table, note)
+                        .create_snapshot(connection_id, &database, &table, note)
                         .await
                     {
                         Ok(snapshot) => sender.input(AppMsg::SnapshotTaken(Box::new(snapshot))),
@@ -2760,9 +2761,10 @@ impl SimpleComponent for AppModel {
                     .set_label("Inspecting tables and foreign keys...");
                 let service = Arc::clone(service);
                 let sender = sender.clone();
+                let database = self.designer_database_for(connection_id);
                 self.handle.spawn(async move {
                     match service
-                        .diagnose_connection_schema(connection_id, "main")
+                        .diagnose_connection_schema(connection_id, &database)
                         .await
                     {
                         Ok(report) => sender.input(AppMsg::DoctorCompleted(Box::new(report))),
@@ -3584,13 +3586,15 @@ impl AppModel {
             .iter()
             .find(|profile| profile.id == id)
             .map(|profile| {
-                if profile.database.is_empty() {
+                if !profile.database.is_empty() {
+                    profile.database.clone()
+                } else if profile.engine == Engine::SQLite {
                     "main".to_string()
                 } else {
-                    profile.database.clone()
+                    String::new()
                 }
             })
-            .unwrap_or_else(|| "main".to_string())
+            .unwrap_or_default()
     }
 
     fn designer_dialect(&self) -> Option<SqlDialect> {
