@@ -113,6 +113,65 @@ fn invalid_migration_name(name: &str) -> UniDbError {
     )
 }
 
+/// Git repository status for a migrations directory.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitRepoStatus {
+    pub is_repo: bool,
+    pub branch: Option<String>,
+    pub dirty_count: usize,
+}
+
+impl GitRepoStatus {
+    pub fn summary(&self) -> String {
+        if !self.is_repo {
+            return "Git: not a git repository".to_string();
+        }
+        let branch = self.branch.as_deref().unwrap_or("HEAD");
+        if self.dirty_count == 0 {
+            format!("Git: {branch} (clean)")
+        } else {
+            format!("Git: {branch} ({} uncommitted)", self.dirty_count)
+        }
+    }
+}
+
+/// Inspects git branch and dirty file count for a directory without mutating it.
+pub fn git_dir_status(dir: &Path) -> GitRepoStatus {
+    let branch_out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output();
+    let Ok(branch_out) = branch_out else {
+        return GitRepoStatus::default();
+    };
+    if !branch_out.status.success() {
+        return GitRepoStatus::default();
+    }
+    let branch = String::from_utf8_lossy(&branch_out.stdout)
+        .trim()
+        .to_string();
+    let dirty_count = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    GitRepoStatus {
+        is_repo: true,
+        branch: Some(branch),
+        dirty_count,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +206,18 @@ mod tests {
     fn checksum_is_stable() {
         assert_eq!(checksum("SELECT 1"), checksum("SELECT 1"));
         assert_ne!(checksum("SELECT 1"), checksum("SELECT 2"));
+    }
+
+    #[test]
+    fn git_dir_status_reports_non_repo_and_repo() {
+        let non_repo = std::env::temp_dir();
+        let status = git_dir_status(&non_repo);
+        assert_eq!(status.summary(), "Git: not a git repository");
+
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo_status = git_dir_status(repo_root);
+        assert!(repo_status.is_repo);
+        assert!(repo_status.branch.is_some());
+        assert!(repo_status.summary().starts_with("Git: "));
     }
 }

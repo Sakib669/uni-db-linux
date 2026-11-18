@@ -760,3 +760,141 @@ async fn table_snapshots_capture_diff_and_restore() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn multi_database_query_runs_across_open_connections_and_merges() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    let db1 = dir.path().join("shard_east.db");
+    let db2 = dir.path().join("shard_west.db");
+    let p1 = ConnectionProfile::new("East", Engine::SQLite, "", db1.to_str().expect("p1"));
+    let p2 = ConnectionProfile::new("West", Engine::SQLite, "", db2.to_str().expect("p2"));
+
+    service.save_connection(&p1, None).await.expect("save p1");
+    service.save_connection(&p2, None).await.expect("save p2");
+    service.open_connection(&p1).await.expect("open p1");
+    service.open_connection(&p2).await.expect("open p2");
+
+    service
+        .execute(
+            p1.id,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users VALUES (1, 'Ada');",
+        )
+        .await
+        .expect("seed p1");
+    service
+        .execute(
+            p2.id,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users VALUES (2, 'Grace');",
+        )
+        .await
+        .expect("seed p2");
+
+    let (summaries, merged) = service
+        .execute_multi(&[p1.id, p2.id], "SELECT id, name FROM users ORDER BY id;")
+        .await
+        .expect("execute_multi");
+    assert_eq!(summaries.len(), 2);
+    assert!(
+        summaries
+            .iter()
+            .all(|s| s.error.is_none() && s.row_count == 1)
+    );
+    assert_eq!(merged.columns.len(), 3);
+    assert_eq!(merged.columns[0].name, "_connection");
+    assert_eq!(merged.rows.len(), 2);
+    assert_eq!(
+        merged.rows[0][0],
+        unidb_core::Value::Text("East".to_string())
+    );
+    assert_eq!(
+        merged.rows[1][0],
+        unidb_core::Value::Text("West".to_string())
+    );
+
+    let audit = service.recent_audit(20).await.expect("audit");
+    assert!(audit.iter().any(|entry| entry.action == "multi_query_run"));
+
+    service.close_connection(p1.id).await.expect("close p1");
+    service.close_connection(p2.id).await.expect("close p2");
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn team_bundles_export_verify_and_import_without_secrets() {
+    let dir_a = tempfile::tempdir().expect("dir a");
+    let provider_a = MemoryKeyProvider::empty();
+    let service_a = bootstrap(dir_a.path(), &provider_a).await;
+
+    let mut conn = ConnectionProfile::new("Staging PG", Engine::PostgreSQL, "127.0.0.1", "app");
+    conn.username = "reader".to_string();
+    service_a
+        .save_connection(&conn, Some("super-secret-password"))
+        .await
+        .expect("save conn");
+    service_a
+        .save_saved_query("Health check", "SELECT 1;", None)
+        .await
+        .expect("save query");
+
+    let bundle_path = dir_a.path().join("team.json");
+    let (bundle, sig_path) = service_a
+        .export_team_bundle("Platform", "Ada", &bundle_path)
+        .await
+        .expect("export bundle");
+    assert_eq!(bundle.connections.len(), 1);
+    assert_eq!(bundle.saved_queries.len(), 1);
+    assert!(sig_path.exists());
+    let exported_text = std::fs::read_to_string(&bundle_path).expect("read bundle");
+    assert!(!exported_text.contains("super-secret-password"));
+    service_a.shutdown().await;
+
+    let dir_b = tempfile::tempdir().expect("dir b");
+    let provider_b = MemoryKeyProvider::empty();
+    let service_b = bootstrap(dir_b.path(), &provider_b).await;
+
+    let preview = service_b
+        .inspect_team_bundle(&bundle_path)
+        .await
+        .expect("inspect bundle");
+    assert!(preview.verification.signature_valid);
+    assert!(preview.verification.detached_sig_checked);
+
+    let report = service_b
+        .import_team_bundle(&bundle_path, true)
+        .await
+        .expect("import bundle");
+    assert_eq!(report.connections_imported, 1);
+    assert_eq!(report.queries_imported, 1);
+    assert!(report.signature_valid);
+
+    let imported_conns = service_b.list_connections().await.expect("list conns");
+    assert_eq!(imported_conns.len(), 1);
+    assert_eq!(imported_conns[0].name, "Staging PG");
+
+    // Re-importing skips duplicates.
+    let second = service_b
+        .import_team_bundle(&bundle_path, true)
+        .await
+        .expect("re-import");
+    assert_eq!(second.connections_imported, 0);
+    assert_eq!(second.connections_skipped, 1);
+
+    // Tampered bundle is rejected when signature verification is required.
+    std::fs::write(&bundle_path, exported_text.replace("Staging PG", "Evil PG")).expect("tamper");
+    let err = service_b
+        .import_team_bundle(&bundle_path, true)
+        .await
+        .expect_err("reject tampered");
+    assert_eq!(err.code(), "bundle_signature_invalid");
+
+    let audit = service_b.recent_audit(20).await.expect("audit");
+    assert!(
+        audit
+            .iter()
+            .any(|entry| entry.action == "team_bundle_imported")
+    );
+    service_b.shutdown().await;
+}

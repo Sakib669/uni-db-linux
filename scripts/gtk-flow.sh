@@ -34,8 +34,16 @@ rm -f /tmp/unidb-demo.db
 sqlite3 /tmp/unidb-demo.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('Ada');"
 sqlite3 /tmp/unidb-demo.db "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), title TEXT);"
 printf 'name\nAlan Turing\nGrace Hopper\n' > /tmp/unidb-import.csv
+rm -rf /tmp/unidb-migrations /tmp/unidb-team-bundle.json /tmp/unidb-team-bundle.json.sig
 mkdir -p /tmp/unidb-migrations
 printf 'CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\nINSERT INTO tags (name) VALUES ("database");\n' > /tmp/unidb-migrations/0001_create_tags.sql
+if command -v git >/dev/null 2>&1; then
+    git -C /tmp/unidb-migrations init -q
+    git -C /tmp/unidb-migrations config user.name "UniDB"
+    git -C /tmp/unidb-migrations config user.email "unidb@example.test"
+    git -C /tmp/unidb-migrations add 0001_create_tags.sql
+    git -C /tmp/unidb-migrations commit -q -m "initial migration"
+fi
 mkdir -p /tmp/unidb-feed
 printf '{"tag_name":"v0.2.0","html_url":"https://example.test/unidb-0.2.0","published_at":"2026-12-01T00:00:00Z"}' > /tmp/unidb-feed/latest.json
 python3 -m http.server 8099 --directory /tmp/unidb-feed >/dev/null 2>&1 &
@@ -86,6 +94,19 @@ xdotool click 1
 sleep 2
 import -window root /app/target/connections-saved.png
 
+# Export a signed team bundle and inspect its signature dialog.
+xdotool mousemove $((X + 732)) $((Y + 327))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+xdotool mousemove $((X + 885)) $((Y + 327))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+import -window root /app/target/connections-bundle.png
+xdotool key Escape
+sleep 0.5
+
 # Connect, then open the navigator.
 xdotool mousemove $((X + 872)) $((Y + 207))
 sleep 0.3
@@ -111,6 +132,13 @@ sleep 0.3
 xdotool key ctrl+Return
 sleep 2
 import -window root /app/target/editor-page.png
+
+# Run the query across all live open connections.
+xdotool mousemove $((X + 1047)) $((Y + 431))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/editor-multi.png
 
 # Designer page is the fourth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 194))
@@ -333,7 +361,9 @@ sleep 0.6
 xdotool key Home
 sleep 0.2
 xdotool key Return
-sleep 1
+sleep 0.5
+xdotool key Escape
+sleep 0.5
 
 # Migrations page is the tenth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 434))

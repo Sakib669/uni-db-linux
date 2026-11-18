@@ -10,11 +10,18 @@ pub mod service;
 pub mod update;
 
 pub use bridge::{Bridge, EventSink, QueryEvent};
-pub use migrations::{MigrationFile, MigrationReport, checksum, load_migrations, plan_migrations};
+pub use migrations::{
+    GitRepoStatus, MigrationFile, MigrationReport, checksum, git_dir_status, load_migrations,
+    plan_migrations,
+};
 pub use paths::default_data_dir;
 pub use security::{CheckStatus, SecurityCheck, SecurityReport};
-pub use service::{AppService, ExportReport, ImportOptions, ImportReport};
-pub use unidb_core::{ForeignKeyInfo, ResultDiff};
+pub use service::{
+    AppService, BundleImportReport, BundlePreview, ExportReport, ImportOptions, ImportReport,
+};
+pub use unidb_core::{
+    BundleVerification, ForeignKeyInfo, MultiTargetSummary, ResultDiff, TeamBundle,
+};
 pub use unidb_store::AuditEntry;
 pub use unidb_store::{HistoryEntry, SavedQuery, TableSnapshot};
 pub use update::{ReleaseInfo, fetch_latest, is_newer, parse_release};

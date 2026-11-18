@@ -15,8 +15,9 @@ use sourceview5::prelude::*;
 use uuid::Uuid;
 
 use unidb_app::{
-    AppService, AuditEntry, CheckStatus, HistoryEntry, ImportOptions, ImportReport, MigrationFile,
-    MigrationReport, ReleaseInfo, ResultDiff, SavedQuery, SecurityReport, TableSnapshot,
+    AppService, AuditEntry, BundleImportReport, BundlePreview, CheckStatus, GitRepoStatus,
+    HistoryEntry, ImportOptions, ImportReport, MigrationFile, MigrationReport, MultiTargetSummary,
+    ReleaseInfo, ResultDiff, SavedQuery, SecurityReport, TableSnapshot, git_dir_status,
 };
 use unidb_core::{
     ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, ErrorCategory,
@@ -213,6 +214,12 @@ struct AppModel {
     snapshots_connection: Option<Uuid>,
     snapshots_items: Vec<TableSnapshot>,
     snapshots_rows: Vec<gtk::ListBoxRow>,
+    run_multi_button: gtk::Button,
+    bundle_path_entry: gtk::Entry,
+    bundle_export_button: gtk::Button,
+    bundle_inspect_button: gtk::Button,
+    bundle_status: gtk::Label,
+    migrations_git_status: GitRepoStatus,
 }
 
 enum AppMsg {
@@ -315,7 +322,7 @@ enum AppMsg {
     FakeRowsFailed(String),
     MigrationsConnChanged(usize),
     MigrationsScan,
-    MigrationsScanned(Box<(Vec<MigrationFile>, Vec<String>, Vec<String>)>),
+    MigrationsScanned(Box<(Vec<MigrationFile>, Vec<String>, Vec<String>, GitRepoStatus)>),
     MigrationsScanFailed(String),
     MigrationsSelectFile(usize),
     MigrationsApply,
@@ -333,6 +340,17 @@ enum AppMsg {
     SnapshotRestored(usize, String),
     DeleteSnapshot(Uuid),
     SnapshotDeleted,
+    RunMultiQuery,
+    MultiQueryFinished(Vec<MultiTargetSummary>, Box<QueryResult>),
+    BundlePathChanged(String),
+    BundleBrowse,
+    ExportTeamBundle,
+    TeamBundleExported(std::path::PathBuf, usize, usize, String),
+    InspectTeamBundle,
+    TeamBundleInspected(std::path::PathBuf, Box<BundlePreview>),
+    ConfirmImportTeamBundle(std::path::PathBuf),
+    TeamBundleImported(Box<BundleImportReport>),
+    TeamBundleFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -455,6 +473,17 @@ impl std::fmt::Debug for AppMsg {
             Self::SnapshotRestored(_, _) => "SnapshotRestored",
             Self::DeleteSnapshot(_) => "DeleteSnapshot",
             Self::SnapshotDeleted => "SnapshotDeleted",
+            Self::RunMultiQuery => "RunMultiQuery",
+            Self::MultiQueryFinished(_, _) => "MultiQueryFinished",
+            Self::BundlePathChanged(_) => "BundlePathChanged",
+            Self::BundleBrowse => "BundleBrowse",
+            Self::ExportTeamBundle => "ExportTeamBundle",
+            Self::TeamBundleExported(_, _, _, _) => "TeamBundleExported",
+            Self::InspectTeamBundle => "InspectTeamBundle",
+            Self::TeamBundleInspected(_, _) => "TeamBundleInspected",
+            Self::ConfirmImportTeamBundle(_) => "ConfirmImportTeamBundle",
+            Self::TeamBundleImported(_) => "TeamBundleImported",
+            Self::TeamBundleFailed(_) => "TeamBundleFailed",
         })
     }
 }
@@ -562,6 +591,11 @@ struct ShellWidgets {
     snapshots_refresh_button: gtk::Button,
     snapshots_status: gtk::Label,
     snapshots_list: gtk::ListBox,
+    run_multi_button: gtk::Button,
+    bundle_path_entry: gtk::Entry,
+    bundle_export_button: gtk::Button,
+    bundle_inspect_button: gtk::Button,
+    bundle_status: gtk::Label,
 }
 
 #[relm4::component]
@@ -753,6 +787,12 @@ impl SimpleComponent for AppModel {
             snapshots_connection: None,
             snapshots_items: Vec::new(),
             snapshots_rows: Vec::new(),
+            run_multi_button: widgets.run_multi_button,
+            bundle_path_entry: widgets.bundle_path_entry,
+            bundle_export_button: widgets.bundle_export_button,
+            bundle_inspect_button: widgets.bundle_inspect_button,
+            bundle_status: widgets.bundle_status,
+            migrations_git_status: GitRepoStatus::default(),
         };
 
         if let Some(error) = &model.error {
@@ -2072,10 +2112,11 @@ impl SimpleComponent for AppModel {
                 self.scan_migrations(&sender);
             }
             AppMsg::MigrationsScanned(boxed) => {
-                let (files, applied, warnings) = *boxed;
+                let (files, applied, warnings, git_status) = *boxed;
                 self.migrations_files = files;
                 self.migrations_applied = applied;
                 self.migrations_warnings = warnings;
+                self.migrations_git_status = git_status;
                 self.populate_migrations_list();
             }
             AppMsg::MigrationsScanFailed(error) => {
@@ -2308,6 +2349,258 @@ impl SimpleComponent for AppModel {
                 self.show_toast("Snapshot deleted.");
                 self.load_snapshots(&sender);
             }
+            AppMsg::RunMultiQuery => {
+                if self.editor_busy {
+                    return;
+                }
+                let ids: Vec<Uuid> = self
+                    .connections
+                    .iter()
+                    .filter(|profile| self.connected.contains(&profile.id))
+                    .map(|profile| profile.id)
+                    .collect();
+                if ids.is_empty() {
+                    self.show_toast("Connect to at least one database first.");
+                    return;
+                }
+                let buffer = self.editor_view.buffer();
+                let sql = buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .to_string();
+                if sql.trim().is_empty() {
+                    self.show_toast("Write a statement first.");
+                    return;
+                }
+                let Some(service) = &self.service else {
+                    return;
+                };
+                self.editor_busy = true;
+                self.editor_error.set_visible(false);
+                self.editor_status
+                    .set_label(&format!("Running across {} live connections...", ids.len()));
+                self.update_controls();
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.execute_multi(&ids, &sql).await {
+                        Ok((summaries, merged)) => {
+                            sender.input(AppMsg::MultiQueryFinished(summaries, Box::new(merged)))
+                        }
+                        Err(error) => sender.input(AppMsg::QueryFailed(format!(
+                            "{} ({})",
+                            error.user_message(),
+                            error.code()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::MultiQueryFinished(summaries, merged) => {
+                self.editor_busy = false;
+                self.render_result(&merged);
+                self.editor_last_result = Some((*merged).clone());
+                self.editor_results_stack.set_visible_child_name("grid");
+                self.chart_button.set_label("Chart");
+
+                let mut plan_lines = vec![format!(
+                    "Multi database execution across {} targets:",
+                    summaries.len()
+                )];
+                for s in &summaries {
+                    match &s.error {
+                        None => plan_lines.push(format!(
+                            "OK   {} ({})  |  {} rows  |  {} ms",
+                            s.connection_name, s.engine, s.row_count, s.elapsed_ms
+                        )),
+                        Some(err) => plan_lines.push(format!(
+                            "ERR  {} ({})  |  {}  |  {} ms",
+                            s.connection_name, s.engine, err, s.elapsed_ms
+                        )),
+                    }
+                }
+                self.plan_buffer.set_text(&plan_lines.join("\n"));
+                self.plan_revealer.set_reveal_child(true);
+                self.editor_status.set_label(&format!(
+                    "Multi query: {} rows across {} connections.",
+                    merged.rows.len(),
+                    summaries.len()
+                ));
+                self.update_controls();
+            }
+            AppMsg::BundlePathChanged(path) => {
+                self.bundle_path_entry.set_text(&path);
+            }
+            AppMsg::BundleBrowse => {
+                let dialog = gtk::FileDialog::builder()
+                    .title("Choose a team bundle JSON file")
+                    .build();
+                let sender = sender.clone();
+                dialog.open(
+                    relm4::main_application().active_window().as_ref(),
+                    None::<&gtk::gio::Cancellable>,
+                    move |result| {
+                        if let Ok(file) = result
+                            && let Some(path) = file.path()
+                        {
+                            sender.input(AppMsg::BundlePathChanged(path.display().to_string()));
+                        }
+                    },
+                );
+            }
+            AppMsg::ExportTeamBundle => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let raw_path = self.bundle_path_entry.text().trim().to_string();
+                let path = if raw_path.is_empty() {
+                    let default_path = std::env::temp_dir().join("unidb-team-bundle.json");
+                    self.bundle_path_entry
+                        .set_text(&default_path.display().to_string());
+                    default_path
+                } else {
+                    std::path::PathBuf::from(raw_path)
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.bundle_status
+                    .set_label("Exporting signed team bundle...");
+                self.handle.spawn(async move {
+                    match service
+                        .export_team_bundle("Workspace Team", "UniDB", &path)
+                        .await
+                    {
+                        Ok((bundle, _sig_path)) => {
+                            let fp = bundle.signature_sha256.chars().take(12).collect::<String>();
+                            sender.input(AppMsg::TeamBundleExported(
+                                path,
+                                bundle.connections.len(),
+                                bundle.saved_queries.len(),
+                                fp,
+                            ))
+                        }
+                        Err(error) => sender.input(AppMsg::TeamBundleFailed(format!(
+                            "Bundle export failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::TeamBundleExported(path, conns, queries, fingerprint) => {
+                let msg = format!(
+                    "Exported {} connection{}, {} quer{} to {} (sig {}...)",
+                    conns,
+                    plural(conns),
+                    queries,
+                    if queries == 1 { "y" } else { "ies" },
+                    path.display(),
+                    fingerprint
+                );
+                self.bundle_status.set_label(&msg);
+                self.show_toast("Team bundle and .sig exported (no passwords included).");
+            }
+            AppMsg::InspectTeamBundle => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let raw_path = self.bundle_path_entry.text().trim().to_string();
+                if raw_path.is_empty() {
+                    self.show_toast("Enter a team bundle path first.");
+                    return;
+                }
+                let path = std::path::PathBuf::from(raw_path);
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.bundle_status.set_label("Verifying team bundle...");
+                self.handle.spawn(async move {
+                    match service.inspect_team_bundle(&path).await {
+                        Ok(preview) => {
+                            sender.input(AppMsg::TeamBundleInspected(path, Box::new(preview)))
+                        }
+                        Err(error) => sender.input(AppMsg::TeamBundleFailed(format!(
+                            "Bundle inspection failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::TeamBundleInspected(path, preview) => {
+                let status_line = format!(
+                    "{}: {} connections, {} queries | {}",
+                    preview.bundle.bundle_name,
+                    preview.bundle.connections.len(),
+                    preview.bundle.saved_queries.len(),
+                    preview.verification.message
+                );
+                self.bundle_status.set_label(&status_line);
+                let body = format!(
+                    "Author: {}\nConnections: {} (credentials excluded)\nSaved queries: {}\nSignature: {} ({})",
+                    preview.bundle.created_by,
+                    preview.bundle.connections.len(),
+                    preview.bundle.saved_queries.len(),
+                    if preview.verification.signature_valid {
+                        "VERIFIED"
+                    } else {
+                        "INVALID"
+                    },
+                    preview.verification.fingerprint
+                );
+                let dialog = adw::AlertDialog::builder()
+                    .heading(format!("Team bundle: {}", preview.bundle.bundle_name))
+                    .body(body)
+                    .build();
+                dialog.add_response("cancel", "Cancel");
+                if preview.verification.signature_valid {
+                    dialog.add_response("import", "Import bundle");
+                    dialog.set_response_appearance("import", adw::ResponseAppearance::Suggested);
+                }
+                dialog.set_default_response(Some("cancel"));
+                dialog.set_close_response("cancel");
+                let sender = sender.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response == "import" {
+                        sender.input(AppMsg::ConfirmImportTeamBundle(path.clone()));
+                    }
+                });
+                if let Some(window) = relm4::main_application().active_window() {
+                    dialog.present(Some(&window));
+                }
+            }
+            AppMsg::ConfirmImportTeamBundle(path) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.import_team_bundle(&path, true).await {
+                        Ok(report) => sender.input(AppMsg::TeamBundleImported(Box::new(report))),
+                        Err(error) => sender.input(AppMsg::TeamBundleFailed(format!(
+                            "Bundle import failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::TeamBundleImported(report) => {
+                let msg = format!(
+                    "Imported {} connection{}, {} skipped, {} quer{}.",
+                    report.connections_imported,
+                    plural(report.connections_imported),
+                    report.connections_skipped,
+                    report.queries_imported,
+                    if report.queries_imported == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    }
+                );
+                self.bundle_status.set_label(&msg);
+                self.show_toast(&msg);
+                self.load_connections(&sender);
+            }
+            AppMsg::TeamBundleFailed(error) => {
+                self.bundle_status.set_label(&error);
+                self.show_toast(&error);
+            }
         }
     }
 }
@@ -2354,6 +2647,8 @@ impl AppModel {
         self.save_button.set_sensitive(ready && !self.busy);
         self.test_button.set_sensitive(ready && !self.busy);
         self.run_button.set_sensitive(ready && !self.editor_busy);
+        self.run_multi_button
+            .set_sensitive(ready && !self.editor_busy && !self.connected.is_empty());
         self.cancel_button.set_sensitive(ready && self.editor_busy);
         self.clear_button.set_sensitive(true);
         self.explain_button
@@ -2368,6 +2663,9 @@ impl AppModel {
             .set_sensitive(ready && !self.busy && self.snapshots_connection.is_some());
         self.snapshots_refresh_button
             .set_sensitive(ready && !self.busy && self.snapshots_connection.is_some());
+        self.bundle_export_button.set_sensitive(ready && !self.busy);
+        self.bundle_inspect_button
+            .set_sensitive(ready && !self.busy);
     }
 
     fn load_connections(&self, sender: &ComponentSender<Self>) {
@@ -3530,10 +3828,11 @@ impl AppModel {
         self.migrations_status
             .set_label("Scanning migrations directory...");
         self.handle.spawn(async move {
+            let git_status = git_dir_status(&dir);
             match service.plan_migrations(connection_id, &dir).await {
                 Ok((files, applied, warnings)) => {
                     sender.input(AppMsg::MigrationsScanned(Box::new((
-                        files, applied, warnings,
+                        files, applied, warnings, git_status,
                     ))));
                 }
                 Err(error) => sender.input(AppMsg::MigrationsScanFailed(format!(
@@ -3548,6 +3847,7 @@ impl AppModel {
         while let Some(row) = self.migrations_list.row_at_index(0) {
             self.migrations_list.remove(&row);
         }
+        let git_note = self.migrations_git_status.summary();
         if self.migrations_files.is_empty() {
             let row = plain_row(
                 "No numbered migration files found",
@@ -3555,8 +3855,9 @@ impl AppModel {
             );
             self.migrations_list.append(&row);
             self.migrations_preview_buffer.set_text("");
-            self.migrations_status
-                .set_label("No .sql migration files found in the directory.");
+            self.migrations_status.set_label(&format!(
+                "No .sql migration files found in the directory. | {git_note}"
+            ));
             return;
         }
 
@@ -3570,7 +3871,7 @@ impl AppModel {
 
         let status_summary = if warning_count > 0 {
             format!(
-                "{} files: {} applied, {} pending, {} modified!",
+                "{} files: {} applied, {} pending, {} modified! | {git_note}",
                 self.migrations_files.len(),
                 applied_count,
                 pending_count,
@@ -3578,7 +3879,7 @@ impl AppModel {
             )
         } else {
             format!(
-                "{} files: {} applied, {} pending.",
+                "{} files: {} applied, {} pending. | {git_note}",
                 self.migrations_files.len(),
                 applied_count,
                 pending_count
@@ -4226,8 +4527,48 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     list_toolbar.append(&new_button);
     let list_page_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     list_page_content.append(&list_toolbar);
+    let bundle_path_entry = gtk::Entry::builder()
+        .placeholder_text("Team bundle JSON path (e.g. /tmp/unidb-team-bundle.json)")
+        .hexpand(true)
+        .build();
+    let bundle_browse_button = gtk::Button::with_label("Browse");
+    {
+        let sender = sender.clone();
+        bundle_browse_button.connect_clicked(move |_| sender.input(AppMsg::BundleBrowse));
+    }
+    let bundle_export_button = gtk::Button::with_label("Export bundle");
+    {
+        let sender = sender.clone();
+        bundle_export_button.connect_clicked(move |_| sender.input(AppMsg::ExportTeamBundle));
+    }
+    let bundle_inspect_button = gtk::Button::with_label("Verify & Import");
+    bundle_inspect_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        bundle_inspect_button.connect_clicked(move |_| sender.input(AppMsg::InspectTeamBundle));
+    }
+    let bundle_controls_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    bundle_controls_box.set_margin_bottom(6);
+    bundle_controls_box.append(&bundle_path_entry);
+    bundle_controls_box.append(&bundle_browse_button);
+    bundle_controls_box.append(&bundle_export_button);
+    bundle_controls_box.append(&bundle_inspect_button);
+    let bundle_status = gtk::Label::builder()
+        .label("Share signed JSON bundles without passwords or keys.")
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    bundle_status.add_css_class("unidb-muted");
+    let bundle_group = adw::PreferencesGroup::builder()
+        .title("Team bundles")
+        .description("Signed workspace export and verified import without secrets")
+        .build();
+    bundle_group.add(&bundle_controls_box);
+    bundle_group.add(&bundle_status);
+
     let connections_page = adw::PreferencesPage::new();
     connections_page.add(&connections_group);
+    connections_page.add(&bundle_group);
     let connections_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
@@ -4627,12 +4968,23 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         .reveal_child(false)
         .child(&plan_scroll)
         .build();
+    let run_multi_button = gtk::Button::with_label("Run on all");
+    run_multi_button.set_tooltip_text(Some("Run this SQL across all open live connections"));
+    {
+        let sender = sender.clone();
+        run_multi_button.connect_clicked(move |_| sender.input(AppMsg::RunMultiQuery));
+    }
+    editor_status.set_hexpand(true);
+    let editor_status_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    editor_status_bar.append(&editor_status);
+    editor_status_bar.append(&run_multi_button);
+
     let results_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     results_box.set_margin_top(8);
     results_box.set_margin_bottom(8);
     results_box.set_margin_start(12);
     results_box.set_margin_end(12);
-    results_box.append(&editor_status);
+    results_box.append(&editor_status_bar);
     results_box.append(&editor_error);
     results_box.append(&editor_results_stack);
     results_box.append(&plan_revealer);
@@ -5579,6 +5931,11 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         snapshots_refresh_button,
         snapshots_status,
         snapshots_list,
+        run_multi_button,
+        bundle_path_entry,
+        bundle_export_button,
+        bundle_inspect_button,
+        bundle_status,
     }
 }
 

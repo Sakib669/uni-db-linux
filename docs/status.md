@@ -17,25 +17,24 @@ Updated 2026-11-18 after round 22 of the autonomous build.
 - History with FTS5 search, saved queries, settings.
 - Packaging: verified `.deb`, desktop entry, icon, AppStream, SBOM, release workflow, AppImage and Flatpak scripts, update notice with tests.
 - Visual query builder with dialect SQL generation, tests, and a verified Builder page.
-- Workflow: deterministic fake data, masking, migration runner with ledger, splitter, tests, and full Migrations page UI with container screenshots.
+- Workflow: deterministic fake data, masking, migration runner with ledger, splitter, git status surface, tests, and full Migrations page UI with container screenshots.
 - Time travel and archive: point in time table snapshots in store, keyed diff comparison, transactional restore, audit logging, and History page UI with container screenshots.
+- Multi database query and team bundles: concurrent cross connection query runner with merged `_connection` result grid, signed JSON bundles with detached `.sig` verification dialog, audit logging, and container screenshots.
 
 ## Current gates
 
-- `cargo test --workspace --no-default-features`: 119 tests passing.
+- `cargo test --workspace --no-default-features`: 126 tests passing.
 - `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`: clean.
 - `cargo fmt --all`: clean.
-- GUI build and container screenshots current for all major surfaces (including Migrations and Snapshots).
+- GUI build and container screenshots current for all workflow surfaces (including Team bundles, Multi DB query, Snapshots, and Migrations git status).
 
 ## Remaining, in roadmap order
 
-- Workflow: multi database query, team bundles, git status surface.
 - Platform: AI schema doctor, scheduled jobs, WASM plugin runtime, offline first sync.
 - Verification: `/check verify`, `/check review`, `/test` per feature.
 - Hardening: arm64 packages, accessibility pass, performance on large results, i18n, final security review, dashboard with saved charts.
 
 ## Next steps
 
-1. Multi database query and team bundles.
-2. Platform feature decisions and slices.
-3. Verification and hardening pass across the built areas.
+1. Platform feature decisions and slices (AI schema doctor, scheduled jobs, WASM plugin runtime, offline first sync).
+2. Verification and hardening pass across the built areas.

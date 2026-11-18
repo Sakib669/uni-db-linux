@@ -17,10 +17,11 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use unidb_core::{
-    ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo, QueryResult, ResultDiff, SqlDialect,
-    TableColumnInfo, TransferFormat, UniDbError, coerce_value, diff_results, generate_fake_rows,
-    insert_statements, insertable_columns, mask_rows, parse_import, rows_to_csv, rows_to_json,
-    valid_identifier,
+    BundleQuery, BundleVerification, ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo,
+    MultiTargetOutcome, MultiTargetSummary, QueryResult, ResultDiff, SqlDialect, TableColumnInfo,
+    TeamBundle, TransferFormat, UniDbError, coerce_value, diff_results, generate_fake_rows,
+    insert_statements, insertable_columns, inspect_bundle_json, mask_rows, merge_multi_results,
+    parse_import, rows_to_csv, rows_to_json, valid_identifier,
 };
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
@@ -102,6 +103,23 @@ pub struct ImportOptions {
 pub struct ExportReport {
     pub rows: usize,
     pub path: PathBuf,
+}
+
+/// Decoded and verified team bundle ready for review before import.
+#[derive(Debug, Clone)]
+pub struct BundlePreview {
+    pub bundle: TeamBundle,
+    pub verification: BundleVerification,
+    pub sig_path: Option<PathBuf>,
+}
+
+/// Summary returned after importing a team bundle into the store.
+#[derive(Debug, Clone)]
+pub struct BundleImportReport {
+    pub connections_imported: usize,
+    pub connections_skipped: usize,
+    pub queries_imported: usize,
+    pub signature_valid: bool,
 }
 
 pub struct AppService {
@@ -693,6 +711,240 @@ impl AppService {
         .await?;
 
         Ok(snapshot.row_count)
+    }
+
+    /// Executes a SQL statement across multiple open connections concurrently and
+    /// merges the rows with a leading `_connection` column.
+    pub async fn execute_multi(
+        &self,
+        connection_ids: &[Uuid],
+        sql: &str,
+    ) -> Result<(Vec<MultiTargetSummary>, QueryResult), UniDbError> {
+        if connection_ids.is_empty() {
+            return Err(UniDbError::new(
+                "multi_query_no_connections",
+                ErrorCategory::ConnectionLost,
+                "Open at least one connection before running across databases",
+            ));
+        }
+        let saved = match &self.store {
+            Some(store) => store.list_connections().await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let senders: HashMap<Uuid, mpsc::Sender<Command>> = {
+            let guard = self.connections.lock().await;
+            connection_ids
+                .iter()
+                .filter_map(|id| guard.get(id).map(|handle| (*id, handle.sender.clone())))
+                .collect()
+        };
+
+        let mut tasks = Vec::with_capacity(connection_ids.len());
+        for &id in connection_ids {
+            let (name, engine) = saved
+                .iter()
+                .find(|profile| profile.id == id)
+                .map(|profile| (profile.name.clone(), profile.engine.display().to_string()))
+                .unwrap_or_else(|| (id.to_string(), "Unknown".to_string()));
+            let sender = senders.get(&id).cloned();
+            let statement = sql.to_string();
+            tasks.push(tokio::spawn(async move {
+                let started = std::time::Instant::now();
+                let result = match sender {
+                    None => Err("This connection is not open".to_string()),
+                    Some(tx) => {
+                        let (reply_sender, reply_receiver) = oneshot::channel();
+                        if tx
+                            .send(Command::Execute {
+                                sql: statement,
+                                reply: reply_sender,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            Err("The connection stopped unexpectedly".to_string())
+                        } else {
+                            match reply_receiver.await {
+                                Ok(Ok(qr)) => Ok(qr),
+                                Ok(Err(error)) => Err(error.user_message().to_string()),
+                                Err(_) => Err("The connection stopped unexpectedly".to_string()),
+                            }
+                        }
+                    }
+                };
+                MultiTargetOutcome {
+                    connection_id: id,
+                    connection_name: name,
+                    engine,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    result,
+                }
+            }));
+        }
+
+        let mut outcomes = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let outcome = task.await.map_err(|error| {
+                UniDbError::internal("Multi database query task failed").with_source(error)
+            })?;
+            outcomes.push(outcome);
+        }
+
+        let (summaries, merged) = merge_multi_results(&outcomes, 500);
+        self.audit_transfer(
+            "multi_query_run",
+            None,
+            "success",
+            serde_json::json!({
+                "targets": summaries.len(),
+                "rows": merged.rows.len(),
+            }),
+        )
+        .await?;
+        Ok((summaries, merged))
+    }
+
+    /// Exports sanitized connection profiles and saved queries to a signed JSON bundle
+    /// plus a detached `.sig` integrity file. Passwords and keys are never exported.
+    pub async fn export_team_bundle(
+        &self,
+        bundle_name: &str,
+        created_by: &str,
+        path: &Path,
+    ) -> Result<(TeamBundle, PathBuf), UniDbError> {
+        let store = self.require_store()?;
+        let profiles = store.list_connections().await?;
+        let saved = store.list_saved_queries().await?;
+        let queries: Vec<BundleQuery> = saved
+            .into_iter()
+            .map(|q| BundleQuery {
+                name: q.name,
+                sql: q.sql,
+            })
+            .collect();
+        let bundle = TeamBundle::build(bundle_name, created_by, &profiles, queries)?;
+        let json = bundle.to_json_pretty()?;
+        tokio::fs::write(path, &json).await.map_err(|error| {
+            UniDbError::new(
+                "bundle_write_failed",
+                ErrorCategory::Network,
+                "Could not write the team bundle file",
+            )
+            .with_detail(error.to_string())
+        })?;
+        let sig_path = PathBuf::from(format!("{}.sig", path.display()));
+        tokio::fs::write(&sig_path, bundle.detached_signature_content())
+            .await
+            .map_err(|error| {
+                UniDbError::new(
+                    "bundle_sig_write_failed",
+                    ErrorCategory::Network,
+                    "Could not write the detached signature file",
+                )
+                .with_detail(error.to_string())
+            })?;
+        self.audit_transfer(
+            "team_bundle_exported",
+            None,
+            "success",
+            serde_json::json!({
+                "bundle_name": bundle.bundle_name,
+                "connections": bundle.connections.len(),
+                "queries": bundle.saved_queries.len(),
+                "fingerprint": bundle.signature_sha256.chars().take(12).collect::<String>(),
+            }),
+        )
+        .await?;
+        Ok((bundle, sig_path))
+    }
+
+    /// Reads and verifies a team bundle and optional sibling `.sig` file without importing.
+    pub async fn inspect_team_bundle(&self, path: &Path) -> Result<BundlePreview, UniDbError> {
+        let json_text = tokio::fs::read_to_string(path).await.map_err(|error| {
+            UniDbError::new(
+                "bundle_read_failed",
+                ErrorCategory::Network,
+                "Could not read the team bundle file",
+            )
+            .with_detail(error.to_string())
+        })?;
+        let sig_candidate = PathBuf::from(format!("{}.sig", path.display()));
+        let (sig_text, sig_path) = match tokio::fs::read_to_string(&sig_candidate).await {
+            Ok(text) => (Some(text), Some(sig_candidate)),
+            Err(_) => (None, None),
+        };
+        let (bundle, verification) = inspect_bundle_json(&json_text, sig_text.as_deref())?;
+        Ok(BundlePreview {
+            bundle,
+            verification,
+            sig_path,
+        })
+    }
+
+    /// Imports a verified team bundle into the local app store without credentials.
+    pub async fn import_team_bundle(
+        &self,
+        path: &Path,
+        require_valid_signature: bool,
+    ) -> Result<BundleImportReport, UniDbError> {
+        let preview = self.inspect_team_bundle(path).await?;
+        if require_valid_signature && !preview.verification.signature_valid {
+            return Err(UniDbError::new(
+                "bundle_signature_invalid",
+                ErrorCategory::Permission,
+                preview.verification.message,
+            ));
+        }
+        let store = self.require_store()?;
+        let existing_conns = store.list_connections().await?;
+        let mut connections_imported = 0usize;
+        let mut connections_skipped = 0usize;
+        for item in &preview.bundle.connections {
+            let duplicate = existing_conns.iter().any(|c| {
+                c.name.eq_ignore_ascii_case(&item.name)
+                    && c.database.eq_ignore_ascii_case(&item.database)
+            });
+            if duplicate {
+                connections_skipped += 1;
+                continue;
+            }
+            let profile = item.to_profile();
+            store.save_connection(&profile, None).await?;
+            connections_imported += 1;
+        }
+        let existing_queries = store.list_saved_queries().await?;
+        let mut queries_imported = 0usize;
+        for query in &preview.bundle.saved_queries {
+            let duplicate = existing_queries
+                .iter()
+                .any(|q| q.name.eq_ignore_ascii_case(&query.name));
+            if duplicate {
+                continue;
+            }
+            store
+                .save_saved_query(&query.name, &query.sql, None)
+                .await?;
+            queries_imported += 1;
+        }
+        self.audit_transfer(
+            "team_bundle_imported",
+            None,
+            "success",
+            serde_json::json!({
+                "bundle_name": preview.bundle.bundle_name,
+                "connections_imported": connections_imported,
+                "connections_skipped": connections_skipped,
+                "queries_imported": queries_imported,
+                "signature_valid": preview.verification.signature_valid,
+            }),
+        )
+        .await?;
+        Ok(BundleImportReport {
+            connections_imported,
+            connections_skipped,
+            queries_imported,
+            signature_valid: preview.verification.signature_valid,
+        })
     }
 
     /// Generates deterministic fake rows and inserts them into a table.
