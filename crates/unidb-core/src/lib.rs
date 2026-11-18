@@ -1,6 +1,7 @@
 //! Domain layer for UniDB: engine metadata, the value model, the error model,
 //! and connection profiles. No database driver and no UI types live here.
 
+pub mod builder;
 pub mod engine;
 pub mod error;
 pub mod profile;
@@ -9,6 +10,7 @@ pub mod transfer;
 pub mod value;
 pub mod visual;
 
+pub use builder::{FilterOp, QueryBuilder, QueryFilter, build_query};
 pub use engine::{Capabilities, Engine};
 pub use error::{ErrorCategory, UniDbError};
 pub use profile::{ConnectionProfile, ParsedConnectionUrl, SslMode};
