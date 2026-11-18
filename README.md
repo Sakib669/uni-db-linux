@@ -44,19 +44,20 @@ cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
-The `gui` feature is off by default so the workspace builds on machines that only need the core. The app needs a running Secret Service (GNOME Keyring or KWallet) to open saved passwords.
+The `gui` feature is off by default so the workspace builds on machines that only need the core. The app needs a running Secret Service (GNOME Keyring or KWallet) to open saved passwords. For start and stop commands for each local database engine, see [docs/local-databases.md](docs/local-databases.md).
 
 ## Project structure
 
 ```
 crates/unidb-core    domain types, value model, error taxonomy, connection profiles
 crates/unidb-store   SQLite app store, migrations, keyring, AES-256-GCM envelopes, audit log
-crates/unidb-engine  driver traits and the SQLite connector
+crates/unidb-engine  driver traits and all 9 engine connectors
 crates/unidb-app     bridge adapter, connection actors, app service
 crates/unidb-ui      GTK4 and libadwaita shell (gui feature)
 src/main.rs          thin binary
 docs/specs/          architecture decisions
 docs/scope/          project scope
+docs/local-databases.md  local server start/stop commands
 ```
 
 ## Roadmap
