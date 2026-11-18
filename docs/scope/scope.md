@@ -205,9 +205,9 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - [x] Table and chart switching plus a clear no numeric column message
   - [x] ERD: foreign key introspection for the SQL engines, pure layout function, and a Schema page with cards and relationship arrows
   - [x] Data compare: baseline capture, keyed row diff with counts and details in the plan pane, and an Export menu to free toolbar space
-  - [ ] Visual query builder: connection, table, column checkboxes, filters, order, limit, SQL preview, and open in editor; core generation with tests done, container screenshot pending
+  - [x] Visual query builder: connection, table, column checkboxes, filters, order, limit, SQL preview, and open in editor, verified with a container screenshot
   - [x] Verified chart, explain plan, ERD, and compare through container screenshots
-- [ ] Follow up: interactive ERD (drag, zoom, click to open), dashboard with saved charts, visual query builder, data compare and result diff, chart export
+- [ ] Follow up: interactive ERD (drag, zoom, click to open), dashboard with saved charts, builder joins and aggregates, cross connection data compare, chart export
 - [ ] Verify it: /check verify Visual features
 - [ ] Test it: /test Visual features
 
