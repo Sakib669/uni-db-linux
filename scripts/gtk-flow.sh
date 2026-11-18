@@ -232,6 +232,28 @@ xdotool click 1
 sleep 1
 import -window root /app/target/builder-preview.png
 
+# Transfer page fake data controls.
+xdotool mousemove $((X + 100)) $((Y + 234))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/transfer-fake-page.png
+
+# Choose the users table and generate fake rows.
+xdotool mousemove $((X + 798)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 0.6
+xdotool key End
+sleep 0.2
+xdotool key Return
+sleep 1
+xdotool mousemove $((X + 564)) $((Y + 212))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/transfer-fake-generated.png
+
 # History page is the sixth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 274))
 sleep 0.3
