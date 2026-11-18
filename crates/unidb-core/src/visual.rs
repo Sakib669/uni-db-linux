@@ -3,6 +3,7 @@
 
 use crate::engine::Engine;
 use crate::error::{ErrorCategory, UniDbError};
+use crate::schema::ForeignKeyInfo;
 use crate::value::{Column, Value};
 
 /// One bar in a chart.
@@ -37,6 +38,124 @@ pub fn explain_statement(engine: Engine, sql: &str) -> Result<String, UniDbError
         }
     };
     Ok(explain)
+}
+
+/// A table in the ERD input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErdTable {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub foreign_keys: Vec<ForeignKeyInfo>,
+}
+
+/// A placed table card.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErdBox {
+    pub index: usize,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub title: String,
+    pub columns: Vec<String>,
+    pub foreign_key_columns: Vec<String>,
+}
+
+/// A relationship arrow between two cards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErdEdge {
+    pub from: usize,
+    pub to: usize,
+    pub label: String,
+}
+
+/// Result of laying out the ERD.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErdLayout {
+    pub boxes: Vec<ErdBox>,
+    pub edges: Vec<ErdEdge>,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Places table cards in a responsive grid and resolves relationship arrows.
+pub fn erd_layout(tables: &[ErdTable], canvas_width: f64) -> ErdLayout {
+    const CARD_WIDTH: f64 = 220.0;
+    const GAP: f64 = 36.0;
+    const PADDING: f64 = 20.0;
+    const MAX_COLUMNS: usize = 10;
+    const HEADER: f64 = 30.0;
+    const ROW: f64 = 18.0;
+
+    if tables.is_empty() {
+        return ErdLayout {
+            boxes: Vec::new(),
+            edges: Vec::new(),
+            width: canvas_width.max(320.0),
+            height: 160.0,
+        };
+    }
+    let usable = (canvas_width - PADDING * 2.0 - GAP).max(CARD_WIDTH);
+    let columns = (((usable + GAP) / (CARD_WIDTH + GAP)).floor() as usize).clamp(1, tables.len());
+    let tallest = tables
+        .iter()
+        .map(|table| table.columns.len().min(MAX_COLUMNS))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let card_height = HEADER + ROW * tallest as f64 + 14.0;
+    let rows = tables.len().div_ceil(columns);
+    let width =
+        (PADDING * 2.0 + columns as f64 * CARD_WIDTH + (columns.saturating_sub(1)) as f64 * GAP)
+            .max(canvas_width);
+    let height = PADDING * 2.0 + rows as f64 * card_height + rows.saturating_sub(1) as f64 * GAP;
+
+    let mut boxes = Vec::new();
+    for (index, table) in tables.iter().enumerate() {
+        let column = index % columns;
+        let row = index / columns;
+        boxes.push(ErdBox {
+            index,
+            x: PADDING + column as f64 * (CARD_WIDTH + GAP),
+            y: PADDING + row as f64 * (card_height + GAP),
+            width: CARD_WIDTH,
+            height: card_height,
+            title: table.name.clone(),
+            columns: table.columns.iter().take(MAX_COLUMNS).cloned().collect(),
+            foreign_key_columns: table
+                .foreign_keys
+                .iter()
+                .map(|key| key.from_column.clone())
+                .collect(),
+        });
+    }
+
+    let mut edges: Vec<ErdEdge> = Vec::new();
+    for (from, table) in tables.iter().enumerate() {
+        for key in &table.foreign_keys {
+            let Some(to) = tables.iter().position(|target| target.name == key.to_table) else {
+                continue;
+            };
+            if to == from {
+                continue;
+            }
+            let edge = ErdEdge {
+                from,
+                to,
+                label: key.from_column.clone(),
+            };
+            if !edges.contains(&edge) {
+                edges.push(edge);
+            }
+        }
+    }
+
+    ErdLayout {
+        boxes,
+        edges,
+        width,
+        height,
+    }
 }
 
 /// True when the declared type is a numeric family.
@@ -201,5 +320,74 @@ mod tests {
         let series = chart_series(&columns, &rows, 50);
         assert_eq!(series[0].label, "#1");
         assert_eq!(series[1].value, 7.0);
+    }
+
+    #[test]
+    fn erd_layout_places_cards_and_resolves_edges() {
+        let tables = vec![
+            ErdTable {
+                name: "users".to_string(),
+                columns: vec!["id".to_string(), "name".to_string()],
+                foreign_keys: Vec::new(),
+            },
+            ErdTable {
+                name: "posts".to_string(),
+                columns: vec!["id".to_string(), "user_id".to_string()],
+                foreign_keys: vec![ForeignKeyInfo {
+                    from_table: "posts".to_string(),
+                    from_column: "user_id".to_string(),
+                    to_table: "users".to_string(),
+                    to_column: "id".to_string(),
+                }],
+            },
+            ErdTable {
+                name: "orphans".to_string(),
+                columns: vec!["id".to_string()],
+                foreign_keys: vec![ForeignKeyInfo {
+                    from_table: "orphans".to_string(),
+                    from_column: "ghost_id".to_string(),
+                    to_table: "missing".to_string(),
+                    to_column: "id".to_string(),
+                }],
+            },
+        ];
+        let layout = erd_layout(&tables, 800.0);
+        assert_eq!(layout.boxes.len(), 3);
+        assert_eq!(layout.edges.len(), 1);
+        assert_eq!(layout.edges[0].from, 1);
+        assert_eq!(layout.edges[0].to, 0);
+        assert_eq!(layout.edges[0].label, "user_id");
+        assert!(
+            layout.boxes[1]
+                .foreign_key_columns
+                .contains(&"user_id".to_string())
+        );
+        for (index, card) in layout.boxes.iter().enumerate() {
+            for other in layout.boxes.iter().skip(index + 1) {
+                let overlaps = card.x < other.x + other.width
+                    && other.x < card.x + card.width
+                    && card.y < other.y + other.height
+                    && other.y < card.y + card.height;
+                assert!(!overlaps, "cards {index} and {} overlap", other.index);
+            }
+        }
+        assert!(layout.height >= layout.boxes[2].y + layout.boxes[2].height);
+    }
+
+    #[test]
+    fn erd_layout_drops_self_references() {
+        let tables = vec![ErdTable {
+            name: "nodes".to_string(),
+            columns: vec!["id".to_string(), "parent_id".to_string()],
+            foreign_keys: vec![ForeignKeyInfo {
+                from_table: "nodes".to_string(),
+                from_column: "parent_id".to_string(),
+                to_table: "nodes".to_string(),
+                to_column: "id".to_string(),
+            }],
+        }];
+        let layout = erd_layout(&tables, 800.0);
+        assert_eq!(layout.boxes.len(), 1);
+        assert!(layout.edges.is_empty());
     }
 }

@@ -13,11 +13,15 @@ pub use engine::{Capabilities, Engine};
 pub use error::{ErrorCategory, UniDbError};
 pub use profile::{ConnectionProfile, ParsedConnectionUrl, SslMode};
 pub use schema::{
-    ColumnDesign, SqlDialect, TableColumnInfo, TableDesign, alter_table_sql, create_table_sql,
+    ColumnDesign, ForeignKeyInfo, SqlDialect, TableColumnInfo, TableDesign, alter_table_sql,
+    create_table_sql,
 };
 pub use transfer::{
     ImportData, TransferFormat, coerce_value, insert_statements, parse_import, rows_to_csv,
     rows_to_json,
 };
 pub use value::{Column, QueryResult, Value};
-pub use visual::{ChartPoint, chart_series, explain_statement, numeric_type};
+pub use visual::{
+    ChartPoint, ErdBox, ErdEdge, ErdLayout, ErdTable, chart_series, erd_layout, explain_statement,
+    numeric_type,
+};

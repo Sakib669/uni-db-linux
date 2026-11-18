@@ -76,6 +76,15 @@ impl TableDesign {
     }
 }
 
+/// One foreign key relationship between two tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignKeyInfo {
+    pub from_table: String,
+    pub from_column: String,
+    pub to_table: String,
+    pub to_column: String,
+}
+
 /// Column metadata returned by introspection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableColumnInfo {
