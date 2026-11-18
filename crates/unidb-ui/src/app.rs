@@ -21,7 +21,7 @@ use unidb_app::{
 use unidb_core::{
     ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, QueryResult,
     QueryResult as ResultSet, SqlDialect, SslMode, TableColumnInfo, TableDesign, TransferFormat,
-    alter_table_sql, chart_series, create_table_sql, erd_layout, explain_statement,
+    alter_table_sql, chart_series, create_table_sql, diff_results, erd_layout, explain_statement,
 };
 
 const ABOUT_NAME: &str = "UniDB";
@@ -116,6 +116,7 @@ struct AppModel {
     plan_revealer: gtk::Revealer,
     plan_buffer: sourceview5::Buffer,
     editor_last_result: Option<QueryResult>,
+    editor_baseline: Option<QueryResult>,
     chart_data: Rc<RefCell<Vec<ChartPoint>>>,
     designer_stack: gtk::Stack,
     designer_conn_dropdown: gtk::DropDown,
@@ -208,6 +209,7 @@ enum AppMsg {
     ExplainFinished(Box<unidb_core::QueryResult>),
     ExplainFailed(String),
     ToggleChart,
+    CompareResults,
     QueryFailed(String),
     ClearResults,
     DesignerConnectionSelected(u32),
@@ -294,6 +296,7 @@ impl std::fmt::Debug for AppMsg {
             Self::ExplainFinished(_) => "ExplainFinished",
             Self::ExplainFailed(_) => "ExplainFailed",
             Self::ToggleChart => "ToggleChart",
+            Self::CompareResults => "CompareResults",
             Self::QueryFailed(_) => "QueryFailed",
             Self::ClearResults => "ClearResults",
             Self::DesignerConnectionSelected(_) => "DesignerConnectionSelected",
@@ -508,6 +511,7 @@ impl SimpleComponent for AppModel {
             plan_revealer: widgets.plan_revealer,
             plan_buffer: widgets.plan_buffer,
             editor_last_result: None,
+            editor_baseline: None,
             chart_data: widgets.chart_data,
             designer_stack: widgets.designer_stack,
             designer_conn_dropdown: widgets.designer_conn_dropdown,
@@ -1011,6 +1015,60 @@ impl SimpleComponent for AppModel {
                 self.editor_results_stack.set_visible_child_name("chart");
                 self.chart_button.set_label("Table");
             }
+            AppMsg::CompareResults => {
+                let Some(current) = self.editor_last_result.clone() else {
+                    self.show_toast("Run a statement before comparing.");
+                    return;
+                };
+                match self.editor_baseline.take() {
+                    None => {
+                        self.editor_baseline = Some(current);
+                        self.editor_status
+                            .set_label("Baseline captured. Run the statement again, then compare.");
+                        self.show_toast("Baseline captured.");
+                    }
+                    Some(baseline) => {
+                        let diff = diff_results(&baseline, &current, 0, 50);
+                        let mut lines = vec![format!(
+                            "Added: {}  Removed: {}  Changed: {}  Unchanged: {}",
+                            diff.added, diff.removed, diff.changed, diff.unchanged
+                        )];
+                        for row in &diff.details {
+                            let before = row
+                                .before
+                                .iter()
+                                .map(unidb_app::value_text)
+                                .collect::<Vec<String>>()
+                                .join(", ");
+                            let after = row
+                                .after
+                                .iter()
+                                .map(unidb_app::value_text)
+                                .collect::<Vec<String>>()
+                                .join(", ");
+                            lines.push(format!(
+                                "{} key={} before=[{}] after=[{}]",
+                                row.change.label(),
+                                row.key,
+                                before,
+                                after
+                            ));
+                        }
+                        self.plan_buffer.set_text(&lines.join("\n"));
+                        self.plan_revealer.set_reveal_child(true);
+                        if diff.has_changes() {
+                            self.editor_status.set_label(&format!(
+                                "Diff: {} added, {} removed, {} changed.",
+                                diff.added, diff.removed, diff.changed
+                            ));
+                            self.show_toast("Comparison complete.");
+                        } else {
+                            self.editor_status.set_label("No differences.");
+                            self.show_toast("No differences.");
+                        }
+                    }
+                }
+            }
             AppMsg::QueryFailed(message) => {
                 self.editor_busy = false;
                 self.update_controls();
@@ -1026,6 +1084,7 @@ impl SimpleComponent for AppModel {
                 self.chart_button.set_label("Chart");
                 self.plan_revealer.set_reveal_child(false);
                 self.plan_buffer.set_text("");
+                self.editor_baseline = None;
                 self.editor_status.set_label("Ready.");
                 self.editor_error.set_visible(false);
                 self.update_controls();
@@ -3516,18 +3575,37 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         let sender = sender.clone();
         chart_button.connect_clicked(move |_| sender.input(AppMsg::ToggleChart));
     }
-    let export_csv_button = gtk::Button::with_label("Export CSV");
+    let compare_button = gtk::Button::with_label("Compare");
+    compare_button.set_tooltip_text(Some(
+        "Capture a baseline, then compare against the next run",
+    ));
+    {
+        let sender = sender.clone();
+        compare_button.connect_clicked(move |_| sender.input(AppMsg::CompareResults));
+    }
+    let export_button = gtk::MenuButton::builder()
+        .label("Export")
+        .tooltip_text("Export the current result")
+        .build();
+    let export_popover = gtk::Popover::new();
+    let export_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    export_box.set_margin_all(6);
+    let export_csv_button = gtk::Button::with_label("CSV");
     {
         let sender = sender.clone();
         export_csv_button
             .connect_clicked(move |_| sender.input(AppMsg::ExportQuery(TransferFormat::Csv)));
     }
-    let export_json_button = gtk::Button::with_label("Export JSON");
+    let export_json_button = gtk::Button::with_label("JSON");
     {
         let sender = sender.clone();
         export_json_button
             .connect_clicked(move |_| sender.input(AppMsg::ExportQuery(TransferFormat::Json)));
     }
+    export_box.append(&export_csv_button);
+    export_box.append(&export_json_button);
+    export_popover.set_child(Some(&export_box));
+    export_button.set_popover(Some(&export_popover));
     let editor_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     editor_toolbar.set_margin_all(10);
     editor_toolbar.append(&editor_dropdown);
@@ -3536,8 +3614,8 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     editor_toolbar.append(&clear_button);
     editor_toolbar.append(&explain_button);
     editor_toolbar.append(&chart_button);
-    editor_toolbar.append(&export_csv_button);
-    editor_toolbar.append(&export_json_button);
+    editor_toolbar.append(&compare_button);
+    editor_toolbar.append(&export_button);
     let editor_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
     editor_page.append(&editor_toolbar);
     editor_page.append(&editor_paned);
