@@ -32,6 +32,7 @@ sleep 1
 # Seed the demo SQLite file so the navigator proves table listing.
 rm -f /tmp/unidb-demo.db
 sqlite3 /tmp/unidb-demo.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('Ada');"
+sqlite3 /tmp/unidb-demo.db "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), title TEXT);"
 printf 'name\nAlan Turing\nGrace Hopper\n' > /tmp/unidb-import.csv
 mkdir -p /tmp/unidb-feed
 printf '{"tag_name":"v0.2.0","html_url":"https://example.test/unidb-0.2.0","published_at":"2026-12-01T00:00:00Z"}' > /tmp/unidb-feed/latest.json
@@ -187,6 +188,13 @@ xdotool click 1
 sleep 2
 import -window root /app/target/editor-explain.png
 
+# Schema page is the eighth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 354))
+sleep 0.3
+xdotool click 1
+sleep 3
+import -window root /app/target/schema-erd.png
+
 # History page is the sixth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 274))
 sleep 0.3
@@ -240,8 +248,8 @@ sleep 0.2
 xdotool key Return
 sleep 1
 
-# Security page is the eighth sidebar row.
-xdotool mousemove $((X + 100)) $((Y + 354))
+# Security page is the ninth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 394))
 sleep 0.3
 xdotool click 1
 sleep 1
