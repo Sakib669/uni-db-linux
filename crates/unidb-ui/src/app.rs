@@ -188,6 +188,7 @@ struct AppModel {
     builder_selected: Vec<String>,
     builder_filters: Vec<QueryFilter>,
     builder_table: Option<String>,
+    fake_count_spin: gtk::SpinButton,
 }
 
 enum AppMsg {
@@ -283,6 +284,9 @@ enum AppMsg {
     BuilderPreview,
     BuilderOpenInEditor,
     BuilderFailed(String),
+    GenerateFakeData,
+    FakeRowsGenerated(usize),
+    FakeRowsFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -380,6 +384,9 @@ impl std::fmt::Debug for AppMsg {
             Self::BuilderPreview => "BuilderPreview",
             Self::BuilderOpenInEditor => "BuilderOpenInEditor",
             Self::BuilderFailed(_) => "BuilderFailed",
+            Self::GenerateFakeData => "GenerateFakeData",
+            Self::FakeRowsGenerated(_) => "FakeRowsGenerated",
+            Self::FakeRowsFailed(_) => "FakeRowsFailed",
         })
     }
 }
@@ -471,6 +478,7 @@ struct ShellWidgets {
     builder_limit_spin: gtk::SpinButton,
     builder_preview_buffer: sourceview5::Buffer,
     builder_status: gtk::Label,
+    fake_count_spin: gtk::SpinButton,
 }
 
 #[relm4::component]
@@ -637,6 +645,7 @@ impl SimpleComponent for AppModel {
             builder_selected: Vec::new(),
             builder_filters: Vec::new(),
             builder_table: None,
+            fake_count_spin: widgets.fake_count_spin,
         };
 
         if let Some(error) = &model.error {
@@ -1811,6 +1820,53 @@ impl SimpleComponent for AppModel {
             },
             AppMsg::BuilderFailed(message) => {
                 self.builder_status.set_label(&message);
+                self.show_toast(&message);
+            }
+            AppMsg::GenerateFakeData => {
+                let Some(connection_id) = self.transfer_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let Some(table) = self
+                    .transfer_tables
+                    .get(self.transfer_table_dropdown.selected() as usize)
+                    .cloned()
+                else {
+                    self.show_toast("Choose a table first.");
+                    return;
+                };
+                let rows = self.fake_count_spin.value_as_int().max(1) as usize;
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos() as u64)
+                    .unwrap_or(1);
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                let database = self.transfer_database.clone();
+                self.transfer_status.set_label("Generating fake rows...");
+                self.handle.spawn(async move {
+                    match service
+                        .generate_fake_rows(connection_id, &database, &table, rows, seed)
+                        .await
+                    {
+                        Ok(count) => sender.input(AppMsg::FakeRowsGenerated(count)),
+                        Err(error) => sender.input(AppMsg::FakeRowsFailed(format!(
+                            "Could not generate fake rows: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::FakeRowsGenerated(count) => {
+                let message = format!("Generated {count} fake rows.");
+                self.transfer_status.set_label(&message);
+                self.show_toast(&message);
+            }
+            AppMsg::FakeRowsFailed(message) => {
+                self.transfer_status.set_label(&message);
                 self.show_toast(&message);
             }
             AppMsg::ExportReady(connection_id, format, path, sql) => {
@@ -3631,6 +3687,23 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     transfer_form.append(&transfer_toolbar);
     transfer_form.append(&transfer_path_row);
     transfer_form.append(&transfer_hint);
+    let fake_rows_label = gtk::Label::new(Some("Fake rows"));
+    let fake_count_spin = gtk::SpinButton::with_range(1.0, 10000.0, 1.0);
+    fake_count_spin.set_value(5.0);
+    fake_count_spin.set_numeric(true);
+    let fake_button = gtk::Button::with_label("Generate fake rows");
+    {
+        let sender = sender.clone();
+        fake_button.connect_clicked(move |_| sender.input(AppMsg::GenerateFakeData));
+    }
+    let fake_row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    fake_row_box.set_margin_start(10);
+    fake_row_box.set_margin_end(10);
+    fake_row_box.set_margin_top(6);
+    fake_row_box.append(&fake_rows_label);
+    fake_row_box.append(&fake_count_spin);
+    fake_row_box.append(&fake_button);
+    transfer_form.append(&fake_row_box);
     transfer_form.append(&transfer_status);
     let transfer_empty = adw::StatusPage::builder()
         .icon_name("document-send-symbolic")
@@ -4580,6 +4653,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         builder_limit_spin,
         builder_preview_buffer,
         builder_status,
+        fake_count_spin,
     }
 }
 
