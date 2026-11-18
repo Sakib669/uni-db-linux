@@ -34,6 +34,8 @@ rm -f /tmp/unidb-demo.db
 sqlite3 /tmp/unidb-demo.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('Ada');"
 sqlite3 /tmp/unidb-demo.db "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), title TEXT);"
 printf 'name\nAlan Turing\nGrace Hopper\n' > /tmp/unidb-import.csv
+mkdir -p /tmp/unidb-migrations
+printf 'CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\nINSERT INTO tags (name) VALUES ("database");\n' > /tmp/unidb-migrations/0001_create_tags.sql
 mkdir -p /tmp/unidb-feed
 printf '{"tag_name":"v0.2.0","html_url":"https://example.test/unidb-0.2.0","published_at":"2026-12-01T00:00:00Z"}' > /tmp/unidb-feed/latest.json
 python3 -m http.server 8099 --directory /tmp/unidb-feed >/dev/null 2>&1 &
@@ -307,8 +309,36 @@ sleep 0.2
 xdotool key Return
 sleep 1
 
-# Security page is the tenth sidebar row.
+# Migrations page is the tenth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 434))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/migrations-page.png
+
+# Set the migrations directory to /tmp/unidb-migrations, scan, and apply.
+xdotool mousemove $((X + 600)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 0.2
+xdotool key ctrl+a
+sleep 0.2
+xdotool type --delay 20 "/tmp/unidb-migrations"
+sleep 0.3
+xdotool mousemove $((X + 920)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/migrations-scanned.png
+
+xdotool mousemove $((X + 1040)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 2
+import -window root /app/target/migrations-applied.png
+
+# Security page is the eleventh sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 474))
 sleep 0.3
 xdotool click 1
 sleep 1

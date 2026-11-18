@@ -571,12 +571,28 @@ async fn migrations_apply_once_and_track_the_ledger() {
     service.save_connection(&profile, None).await.expect("save");
     service.open_connection(&profile).await.expect("open");
 
+    let (plan_files, plan_applied, warnings) = service
+        .plan_migrations(profile.id, &migrations)
+        .await
+        .expect("plan before apply");
+    assert_eq!(plan_files.len(), 2);
+    assert!(plan_applied.is_empty());
+    assert!(warnings.is_empty());
+
     let first = service
         .apply_migrations(profile.id, &migrations)
         .await
         .expect("first run");
     assert_eq!(first.applied.len(), 2);
     assert_eq!(first.skipped, 0);
+
+    let (plan_files2, plan_applied2, warnings2) = service
+        .plan_migrations(profile.id, &migrations)
+        .await
+        .expect("plan after apply");
+    assert_eq!(plan_files2.len(), 2);
+    assert_eq!(plan_applied2.len(), 2);
+    assert!(warnings2.is_empty());
     let rows = service
         .execute(profile.id, "SELECT body FROM notes WHERE id = 1")
         .await

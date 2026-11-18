@@ -15,8 +15,8 @@ use sourceview5::prelude::*;
 use uuid::Uuid;
 
 use unidb_app::{
-    AppService, AuditEntry, CheckStatus, HistoryEntry, ImportOptions, ImportReport, ReleaseInfo,
-    SavedQuery, SecurityReport,
+    AppService, AuditEntry, CheckStatus, HistoryEntry, ImportOptions, ImportReport, MigrationFile,
+    MigrationReport, ReleaseInfo, SavedQuery, SecurityReport,
 };
 use unidb_core::{
     ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, ErrorCategory,
@@ -189,6 +189,19 @@ struct AppModel {
     builder_filters: Vec<QueryFilter>,
     builder_table: Option<String>,
     fake_count_spin: gtk::SpinButton,
+    migrations_stack: gtk::Stack,
+    migrations_conn_dropdown: gtk::DropDown,
+    migrations_dir_entry: gtk::Entry,
+    migrations_scan_button: gtk::Button,
+    migrations_apply_button: gtk::Button,
+    migrations_status: gtk::Label,
+    migrations_list: gtk::ListBox,
+    migrations_preview_buffer: sourceview5::Buffer,
+    migrations_ids: Vec<Uuid>,
+    migrations_connection: Option<Uuid>,
+    migrations_files: Vec<MigrationFile>,
+    migrations_applied: Vec<String>,
+    migrations_warnings: Vec<String>,
 }
 
 enum AppMsg {
@@ -289,6 +302,14 @@ enum AppMsg {
     GenerateFakeData,
     FakeRowsGenerated(usize),
     FakeRowsFailed(String),
+    MigrationsConnChanged(usize),
+    MigrationsScan,
+    MigrationsScanned(Box<(Vec<MigrationFile>, Vec<String>, Vec<String>)>),
+    MigrationsScanFailed(String),
+    MigrationsSelectFile(usize),
+    MigrationsApply,
+    MigrationsApplied(Box<MigrationReport>),
+    MigrationsApplyFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -391,6 +412,14 @@ impl std::fmt::Debug for AppMsg {
             Self::GenerateFakeData => "GenerateFakeData",
             Self::FakeRowsGenerated(_) => "FakeRowsGenerated",
             Self::FakeRowsFailed(_) => "FakeRowsFailed",
+            Self::MigrationsConnChanged(_) => "MigrationsConnChanged",
+            Self::MigrationsScan => "MigrationsScan",
+            Self::MigrationsScanned(_) => "MigrationsScanned",
+            Self::MigrationsScanFailed(_) => "MigrationsScanFailed",
+            Self::MigrationsSelectFile(_) => "MigrationsSelectFile",
+            Self::MigrationsApply => "MigrationsApply",
+            Self::MigrationsApplied(_) => "MigrationsApplied",
+            Self::MigrationsApplyFailed(_) => "MigrationsApplyFailed",
         })
     }
 }
@@ -483,6 +512,14 @@ struct ShellWidgets {
     builder_preview_buffer: sourceview5::Buffer,
     builder_status: gtk::Label,
     fake_count_spin: gtk::SpinButton,
+    migrations_stack: gtk::Stack,
+    migrations_conn_dropdown: gtk::DropDown,
+    migrations_dir_entry: gtk::Entry,
+    migrations_scan_button: gtk::Button,
+    migrations_apply_button: gtk::Button,
+    migrations_status: gtk::Label,
+    migrations_list: gtk::ListBox,
+    migrations_preview_buffer: sourceview5::Buffer,
 }
 
 #[relm4::component]
@@ -650,6 +687,19 @@ impl SimpleComponent for AppModel {
             builder_filters: Vec::new(),
             builder_table: None,
             fake_count_spin: widgets.fake_count_spin,
+            migrations_stack: widgets.migrations_stack,
+            migrations_conn_dropdown: widgets.migrations_conn_dropdown,
+            migrations_dir_entry: widgets.migrations_dir_entry,
+            migrations_scan_button: widgets.migrations_scan_button,
+            migrations_apply_button: widgets.migrations_apply_button,
+            migrations_status: widgets.migrations_status,
+            migrations_list: widgets.migrations_list,
+            migrations_preview_buffer: widgets.migrations_preview_buffer,
+            migrations_ids: Vec::new(),
+            migrations_connection: None,
+            migrations_files: Vec::new(),
+            migrations_applied: Vec::new(),
+            migrations_warnings: Vec::new(),
         };
 
         if let Some(error) = &model.error {
@@ -692,7 +742,10 @@ impl SimpleComponent for AppModel {
                 if index == 8 {
                     self.refresh_builder(&sender);
                 }
-                if index == 9 && !self.security_loaded {
+                if index == 9 {
+                    self.refresh_migrations(&sender);
+                }
+                if index == 10 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -1955,6 +2008,69 @@ impl SimpleComponent for AppModel {
                     }
                 });
             }
+            AppMsg::MigrationsConnChanged(index) => {
+                if let Some(id) = self.migrations_ids.get(index) {
+                    self.migrations_connection = Some(*id);
+                    self.scan_migrations(&sender);
+                }
+            }
+            AppMsg::MigrationsScan => {
+                self.scan_migrations(&sender);
+            }
+            AppMsg::MigrationsScanned(boxed) => {
+                let (files, applied, warnings) = *boxed;
+                self.migrations_files = files;
+                self.migrations_applied = applied;
+                self.migrations_warnings = warnings;
+                self.populate_migrations_list();
+            }
+            AppMsg::MigrationsScanFailed(error) => {
+                self.migrations_status.set_label(&error);
+                self.show_toast(&error);
+            }
+            AppMsg::MigrationsSelectFile(index) => {
+                if let Some(file) = self.migrations_files.get(index) {
+                    self.migrations_preview_buffer.set_text(&file.sql);
+                }
+            }
+            AppMsg::MigrationsApply => {
+                let Some(connection_id) = self.migrations_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let dir_str = self.migrations_dir_entry.text().to_string();
+                let dir = std::path::PathBuf::from(dir_str);
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.migrations_status
+                    .set_label("Applying pending migrations...");
+                self.handle.spawn(async move {
+                    match service.apply_migrations(connection_id, &dir).await {
+                        Ok(report) => sender.input(AppMsg::MigrationsApplied(Box::new(report))),
+                        Err(error) => sender.input(AppMsg::MigrationsApplyFailed(format!(
+                            "Migration failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::MigrationsApplied(report) => {
+                let msg = format!(
+                    "Applied {} migrations, skipped {}",
+                    report.applied.len(),
+                    report.skipped
+                );
+                self.migrations_status.set_label(&msg);
+                self.show_toast(&msg);
+                self.scan_migrations(&sender);
+            }
+            AppMsg::MigrationsApplyFailed(error) => {
+                self.migrations_status.set_label(&error);
+                self.show_toast(&error);
+            }
         }
     }
 }
@@ -1981,6 +2097,7 @@ impl AppModel {
             6 => ("settings", "Settings"),
             7 => ("schema", "Schema"),
             8 => ("builder", "Builder"),
+            9 => ("migrations", "Migrations"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -2006,6 +2123,10 @@ impl AppModel {
             .set_sensitive(ready && !self.editor_busy);
         self.chart_button
             .set_sensitive(self.editor_last_result.is_some());
+        self.migrations_scan_button
+            .set_sensitive(ready && !self.busy);
+        self.migrations_apply_button
+            .set_sensitive(ready && !self.busy);
     }
 
     fn load_connections(&self, sender: &ComponentSender<Self>) {
@@ -3119,6 +3240,165 @@ impl AppModel {
             limit: Some(self.builder_limit_spin.value_as_int() as u32),
         };
         build_query(&builder, dialect)
+    }
+
+    fn refresh_migrations(&mut self, sender: &ComponentSender<Self>) {
+        let live: Vec<ConnectionProfile> = self
+            .connections
+            .iter()
+            .filter(|profile| self.connected.contains(&profile.id))
+            .cloned()
+            .collect();
+        self.migrations_ids = live.iter().map(|profile| profile.id).collect();
+        let names: Vec<&str> = live.iter().map(|profile| profile.name.as_str()).collect();
+        self.migrations_conn_dropdown
+            .set_model(Some(&gtk::StringList::new(&names)));
+        if live.is_empty() {
+            self.migrations_connection = None;
+            self.migrations_stack.set_visible_child_name("empty");
+            return;
+        }
+        self.migrations_stack.set_visible_child_name("form");
+        let current = self
+            .migrations_connection
+            .filter(|id| self.migrations_ids.contains(id))
+            .unwrap_or(self.migrations_ids[0]);
+        self.migrations_connection = Some(current);
+        let index = self
+            .migrations_ids
+            .iter()
+            .position(|id| *id == current)
+            .unwrap_or(0);
+        self.migrations_conn_dropdown.set_selected(index as u32);
+        self.scan_migrations(sender);
+    }
+
+    fn scan_migrations(&mut self, sender: &ComponentSender<Self>) {
+        let Some(connection_id) = self.migrations_connection else {
+            self.migrations_status
+                .set_label("Choose a live connection first.");
+            return;
+        };
+        let Some(service) = &self.service else {
+            return;
+        };
+        let dir_str = self.migrations_dir_entry.text().to_string();
+        let dir = std::path::PathBuf::from(dir_str);
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.migrations_status
+            .set_label("Scanning migrations directory...");
+        self.handle.spawn(async move {
+            match service.plan_migrations(connection_id, &dir).await {
+                Ok((files, applied, warnings)) => {
+                    sender.input(AppMsg::MigrationsScanned(Box::new((
+                        files, applied, warnings,
+                    ))));
+                }
+                Err(error) => sender.input(AppMsg::MigrationsScanFailed(format!(
+                    "Scan failed: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
+    fn populate_migrations_list(&mut self) {
+        while let Some(row) = self.migrations_list.row_at_index(0) {
+            self.migrations_list.remove(&row);
+        }
+        if self.migrations_files.is_empty() {
+            let row = plain_row(
+                "No numbered migration files found",
+                "folder-download-symbolic",
+            );
+            self.migrations_list.append(&row);
+            self.migrations_preview_buffer.set_text("");
+            self.migrations_status
+                .set_label("No .sql migration files found in the directory.");
+            return;
+        }
+
+        let applied_count = self
+            .migrations_files
+            .iter()
+            .filter(|f| self.migrations_applied.contains(&f.name))
+            .count();
+        let pending_count = self.migrations_files.len() - applied_count;
+        let warning_count = self.migrations_warnings.len();
+
+        let status_summary = if warning_count > 0 {
+            format!(
+                "{} files: {} applied, {} pending, {} modified!",
+                self.migrations_files.len(),
+                applied_count,
+                pending_count,
+                warning_count
+            )
+        } else {
+            format!(
+                "{} files: {} applied, {} pending.",
+                self.migrations_files.len(),
+                applied_count,
+                pending_count
+            )
+        };
+        self.migrations_status.set_label(&status_summary);
+
+        let files = self.migrations_files.clone();
+        for file in &files {
+            let is_applied = self.migrations_applied.contains(&file.name);
+            let has_warning = self
+                .migrations_warnings
+                .iter()
+                .any(|w| w.starts_with(&file.name));
+
+            let (badge_text, badge_class, icon_name) = if has_warning {
+                ("Modified", "status-fail", "dialog-warning-symbolic")
+            } else if is_applied {
+                ("Applied", "status-pass", "emblem-ok-symbolic")
+            } else {
+                ("Pending", "status-warn", "document-send-symbolic")
+            };
+
+            let row = gtk::ListBoxRow::new();
+            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            row_box.set_margin_all(8);
+
+            let icon = gtk::Image::from_icon_name(icon_name);
+            row_box.append(&icon);
+
+            let label_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            label_box.set_hexpand(true);
+
+            let title = gtk::Label::new(Some(&file.name));
+            title.set_xalign(0.0);
+            let check_prefix = if file.checksum.len() >= 8 {
+                &file.checksum[..8]
+            } else {
+                &file.checksum
+            };
+            let subtitle = gtk::Label::new(Some(&format!("Checksum: {check_prefix}")));
+            subtitle.set_xalign(0.0);
+            subtitle.add_css_class("unidb-muted");
+            label_box.append(&title);
+            label_box.append(&subtitle);
+            row_box.append(&label_box);
+
+            let badge = gtk::Label::new(Some(badge_text));
+            badge.add_css_class(badge_class);
+            row_box.append(&badge);
+
+            row.set_child(Some(&row_box));
+            self.migrations_list.append(&row);
+        }
+
+        if let Some(first) = self.migrations_files.first() {
+            self.migrations_preview_buffer.set_text(&first.sql);
+            if let Some(row) = self.migrations_list.row_at_index(0) {
+                self.migrations_list.select_row(Some(&row));
+            }
+        }
     }
 
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
@@ -4552,6 +4832,111 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     schema_stack.add_named(&schema_form, Some("form"));
     schema_stack.set_visible_child_name("empty");
 
+    // Migrations page.
+    let migrations_status = gtk::Label::builder()
+        .label("Scan a migrations directory to see pending files.")
+        .xalign(0.0)
+        .wrap(true)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    migrations_status.add_css_class("unidb-muted");
+    let migrations_conn_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    migrations_conn_dropdown.set_hexpand(true);
+    {
+        let sender = sender.clone();
+        migrations_conn_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::MigrationsConnChanged(dropdown.selected() as usize));
+        });
+    }
+    let migrations_dir_entry = gtk::Entry::builder()
+        .text("migrations")
+        .placeholder_text("Directory with NNNN_name.sql files")
+        .hexpand(true)
+        .build();
+    let migrations_scan_button = gtk::Button::with_label("Scan");
+    {
+        let sender = sender.clone();
+        migrations_scan_button.connect_clicked(move |_| sender.input(AppMsg::MigrationsScan));
+    }
+    let migrations_apply_button = gtk::Button::with_label("Apply Pending");
+    migrations_apply_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        migrations_apply_button.connect_clicked(move |_| sender.input(AppMsg::MigrationsApply));
+    }
+    let migrations_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    migrations_toolbar.set_margin_all(10);
+    migrations_toolbar.append(&migrations_conn_dropdown);
+    migrations_toolbar.append(&migrations_dir_entry);
+    migrations_toolbar.append(&migrations_scan_button);
+    migrations_toolbar.append(&migrations_apply_button);
+
+    let migrations_list = gtk::ListBox::new();
+    migrations_list.set_selection_mode(gtk::SelectionMode::Single);
+    migrations_list.add_css_class("boxed-list");
+    {
+        let sender = sender.clone();
+        migrations_list.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                sender.input(AppMsg::MigrationsSelectFile(row.index() as usize));
+            }
+        });
+    }
+    let migrations_list_scroll = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .min_content_height(180)
+        .child(&migrations_list)
+        .build();
+
+    let migrations_preview_buffer = sourceview5::Buffer::new(None::<&gtk::TextTagTable>);
+    if let Some(language) = sourceview5::LanguageManager::default().language("sql") {
+        migrations_preview_buffer.set_language(Some(&language));
+    }
+    migrations_preview_buffer.set_highlight_syntax(true);
+    if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme("Adwaita") {
+        migrations_preview_buffer.set_style_scheme(Some(&scheme));
+    }
+    let migrations_preview_view = sourceview5::View::builder()
+        .buffer(&migrations_preview_buffer)
+        .monospace(true)
+        .show_line_numbers(true)
+        .editable(false)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    let migrations_preview_scroll = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .min_content_height(180)
+        .child(&migrations_preview_view)
+        .build();
+
+    let migrations_paned = gtk::Paned::new(gtk::Orientation::Vertical);
+    migrations_paned.set_start_child(Some(&migrations_list_scroll));
+    migrations_paned.set_end_child(Some(&migrations_preview_scroll));
+    migrations_paned.set_position(220);
+    migrations_paned.set_hexpand(true);
+    migrations_paned.set_vexpand(true);
+
+    let migrations_form = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    migrations_form.append(&migrations_toolbar);
+    migrations_form.append(&migrations_status);
+    migrations_form.append(&migrations_paned);
+
+    let migrations_empty = adw::StatusPage::builder()
+        .icon_name("system-software-update-symbolic")
+        .title("No live connection")
+        .description("Connect to a database in Connections, then manage migrations here.")
+        .build();
+    let migrations_stack = gtk::Stack::new();
+    migrations_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    migrations_stack.add_named(&migrations_empty, Some("empty"));
+    migrations_stack.add_named(&migrations_form, Some("form"));
+    migrations_stack.set_visible_child_name("empty");
+
     let page_stack = gtk::Stack::new();
     page_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     page_stack.add_named(&connections_stack, Some("connections"));
@@ -4563,6 +4948,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.add_named(&settings_scroll, Some("settings"));
     page_stack.add_named(&schema_stack, Some("schema"));
     page_stack.add_named(&builder_stack, Some("builder"));
+    page_stack.add_named(&migrations_stack, Some("migrations"));
     page_stack.add_named(&security_scroll, Some("security"));
 
     let content_page = adw::NavigationPage::new(&page_stack, "Connections");
@@ -4579,6 +4965,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         ("emblem-system-symbolic", "Settings"),
         ("view-grid-symbolic", "Schema"),
         ("document-edit-symbolic", "Builder"),
+        ("system-software-update-symbolic", "Migrations"),
         ("security-high-symbolic", "Security"),
     ] {
         let row = gtk::ListBoxRow::new();
@@ -4732,6 +5119,14 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         builder_preview_buffer,
         builder_status,
         fake_count_spin,
+        migrations_stack,
+        migrations_conn_dropdown,
+        migrations_dir_entry,
+        migrations_scan_button,
+        migrations_apply_button,
+        migrations_status,
+        migrations_list,
+        migrations_preview_buffer,
     }
 }
 

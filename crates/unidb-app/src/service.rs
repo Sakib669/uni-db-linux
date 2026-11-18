@@ -409,6 +409,34 @@ impl AppService {
             .map_err(|_| connection_stopped_error())?
     }
 
+    /// Plans migrations for a connection against a migrations directory.
+    /// Returns discovered files, names of already applied migrations, and any checksum warnings.
+    pub async fn plan_migrations(
+        &self,
+        connection_id: Uuid,
+        dir: &Path,
+    ) -> Result<
+        (
+            Vec<crate::migrations::MigrationFile>,
+            Vec<String>,
+            Vec<String>,
+        ),
+        UniDbError,
+    > {
+        let files = load_migrations(dir)?;
+        let applied_rows = self
+            .require_store()?
+            .list_applied_migrations(connection_id)
+            .await?;
+        let applied: Vec<(String, String)> = applied_rows
+            .iter()
+            .map(|row| (row.name.clone(), row.checksum.clone()))
+            .collect();
+        let applied_names: Vec<String> = applied.iter().map(|(n, _)| n.clone()).collect();
+        let (_pending, warnings) = plan_migrations(&files, &applied);
+        Ok((files, applied_names, warnings))
+    }
+
     /// Applies pending numbered SQL files from a directory in one transaction
     /// per file, recording each in the migration ledger.
     pub async fn apply_migrations(

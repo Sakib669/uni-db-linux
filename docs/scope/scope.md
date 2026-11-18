@@ -221,7 +221,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [ ] Decide all workflow features. First slice: [0015](../specs/0015-fake-data.md)
 - [ ] Build it: /develop Workflow features
   - [x] Fake data: type aware deterministic generator, skipped integer keys, transactional insert, audit, Transfer controls, and container screenshot
-  - [x] Migrations and git: numbered SQL files, safe statement splitter, per connection ledger with checksums, transactional runner with audit and SQLite tests; Migrations page and git status are follow ups
+  - [x] Migrations and git: numbered SQL files, safe statement splitter, per connection ledger with checksums, transactional runner with audit, Migrations page UI with live connection, directory picker, checksum warning badges, SQL preview, and transactional apply, verified with container screenshots in docs/evidence/
   - [ ] Time travel and archive
   - [x] Masking of exports: text and email masking, masked CSV and JSON entries in the editor Export menu, service path with audit, and headless tests
   - [ ] Multi database query and team bundles

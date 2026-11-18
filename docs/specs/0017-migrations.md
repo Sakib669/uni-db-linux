@@ -51,7 +51,7 @@ The table designer covers one table at a time and the editor covers ad hoc SQL, 
 
 ## Follow-up
 
-- [ ] Migrations page with plan, apply, and file preview.
+- [x] Migrations page with plan, apply, and file preview.
 - [ ] Git status and ordering checks in the UI.
 - [ ] Down migrations and repair mode.
 - [ ] Locking so two app instances cannot apply at once.
