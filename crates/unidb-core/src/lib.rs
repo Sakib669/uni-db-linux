@@ -8,6 +8,7 @@ pub mod fake;
 pub mod mask;
 pub mod profile;
 pub mod schema;
+pub mod sql_split;
 pub mod transfer;
 pub mod value;
 pub mod visual;
@@ -22,6 +23,7 @@ pub use schema::{
     ColumnDesign, ForeignKeyInfo, SqlDialect, TableColumnInfo, TableDesign, alter_table_sql,
     create_table_sql,
 };
+pub use sql_split::split_statements;
 pub use transfer::{
     ImportData, TransferFormat, coerce_value, insert_statements, parse_import, rows_to_csv,
     rows_to_json,
