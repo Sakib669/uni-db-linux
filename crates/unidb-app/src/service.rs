@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 use unidb_core::{
     ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo, QueryResult, SqlDialect,
-    TableColumnInfo, TransferFormat, UniDbError, coerce_value, insert_statements, parse_import,
-    rows_to_csv, rows_to_json,
+    TableColumnInfo, TransferFormat, UniDbError, coerce_value, generate_fake_rows,
+    insert_statements, insertable_columns, parse_import, rows_to_csv, rows_to_json,
 };
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
@@ -406,6 +406,66 @@ impl AppService {
         reply_receiver
             .await
             .map_err(|_| connection_stopped_error())?
+    }
+
+    /// Generates deterministic fake rows and inserts them into a table.
+    pub async fn generate_fake_rows(
+        &self,
+        connection_id: Uuid,
+        database: &str,
+        table: &str,
+        rows: usize,
+        seed: u64,
+    ) -> Result<usize, UniDbError> {
+        let columns = self.describe_table(connection_id, database, table).await?;
+        let insertable = insertable_columns(&columns);
+        if insertable.is_empty() {
+            return Err(UniDbError::new(
+                "fake_data_no_columns",
+                ErrorCategory::Unsupported,
+                "This table has no columns that can receive generated values",
+            ));
+        }
+        let profile = self
+            .require_store()?
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "connection_not_found",
+                    ErrorCategory::ConnectionLost,
+                    "The connection profile could not be loaded",
+                )
+            })?;
+        let dialect = SqlDialect::for_engine(profile.engine).ok_or_else(|| {
+            UniDbError::new(
+                "fake_data_unsupported",
+                ErrorCategory::Unsupported,
+                "Fake data is supported for SQL engines only",
+            )
+        })?;
+        let data = generate_fake_rows(&columns, rows, seed);
+        let names: Vec<String> = insertable
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        let statements = insert_statements(dialect, table, &names, &data, 200)?;
+        for statement in &statements {
+            self.apply_statements(connection_id, std::slice::from_ref(statement))
+                .await?;
+        }
+        self.audit_transfer(
+            "fake_data_generated",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "table": table,
+                "rows": data.len(),
+                "seed": seed,
+            }),
+        )
+        .await?;
+        Ok(data.len())
     }
 
     /// Describes the columns of a table for the designer.

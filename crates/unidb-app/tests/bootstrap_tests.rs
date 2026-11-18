@@ -465,3 +465,42 @@ async fn foreign_keys_are_reported_for_a_sqlite_schema() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn fake_data_is_deterministic_and_inserted() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+    service
+        .apply_statements(
+            profile.id,
+            &[
+                "CREATE TABLE people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)"
+                    .to_string(),
+            ],
+        )
+        .await
+        .expect("schema");
+    let generated = service
+        .generate_fake_rows(profile.id, "main", "people", 4, 7)
+        .await
+        .expect("generate");
+    assert_eq!(generated, 4);
+    let result = service
+        .execute(profile.id, "SELECT COUNT(*) FROM people")
+        .await
+        .expect("count");
+    assert_eq!(result.rows[0][0], unidb_core::Value::Int(4));
+    let audit = service.recent_audit(20).await.expect("audit");
+    assert!(
+        audit
+            .iter()
+            .any(|entry| entry.action == "fake_data_generated")
+    );
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
