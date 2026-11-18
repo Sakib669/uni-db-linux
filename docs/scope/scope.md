@@ -204,7 +204,8 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - [x] Results stack with the table, a cairo bar chart, labels and values, null skipping, and a 50 bar cap
   - [x] Table and chart switching plus a clear no numeric column message
   - [x] ERD: foreign key introspection for the SQL engines, pure layout function, and a Schema page with cards and relationship arrows
-  - [x] Verified chart, explain plan, and ERD through container screenshots
+  - [x] Data compare: baseline capture, keyed row diff with counts and details in the plan pane, and an Export menu to free toolbar space
+  - [x] Verified chart, explain plan, ERD, and compare through container screenshots
 - [ ] Follow up: interactive ERD (drag, zoom, click to open), dashboard with saved charts, visual query builder, data compare and result diff, chart export
 - [ ] Verify it: /check verify Visual features
 - [ ] Test it: /test Visual features
