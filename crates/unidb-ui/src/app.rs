@@ -19,9 +19,9 @@ use unidb_app::{
     SavedQuery, SecurityReport,
 };
 use unidb_core::{
-    ChartPoint, ColumnDesign, ConnectionProfile, Engine, QueryResult, QueryResult as ResultSet,
-    SqlDialect, SslMode, TableColumnInfo, TableDesign, TransferFormat, alter_table_sql,
-    chart_series, create_table_sql, explain_statement,
+    ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, QueryResult,
+    QueryResult as ResultSet, SqlDialect, SslMode, TableColumnInfo, TableDesign, TransferFormat,
+    alter_table_sql, chart_series, create_table_sql, erd_layout, explain_statement,
 };
 
 const ABOUT_NAME: &str = "UniDB";
@@ -157,6 +157,14 @@ struct AppModel {
     update_button: gtk::Button,
     update_status: gtk::Label,
     update_feed: Option<String>,
+    schema_stack: gtk::Stack,
+    schema_conn_dropdown: gtk::DropDown,
+    schema_status: gtk::Label,
+    schema_canvas: gtk::DrawingArea,
+    schema_tables: Rc<RefCell<Vec<ErdTable>>>,
+    schema_ids: Vec<Uuid>,
+    schema_connection: Option<Uuid>,
+    schema_database: String,
 }
 
 enum AppMsg {
@@ -237,6 +245,10 @@ enum AppMsg {
     CheckUpdates,
     UpdateResult(Option<Box<ReleaseInfo>>),
     UpdateFailed(String),
+    SchemaRefresh,
+    SchemaConnectionSelected(u32),
+    SchemaLoaded(Box<Vec<ErdTable>>),
+    SchemaFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -319,6 +331,10 @@ impl std::fmt::Debug for AppMsg {
             Self::CheckUpdates => "CheckUpdates",
             Self::UpdateResult(_) => "UpdateResult",
             Self::UpdateFailed(_) => "UpdateFailed",
+            Self::SchemaRefresh => "SchemaRefresh",
+            Self::SchemaConnectionSelected(_) => "SchemaConnectionSelected",
+            Self::SchemaLoaded(_) => "SchemaLoaded",
+            Self::SchemaFailed(_) => "SchemaFailed",
         })
     }
 }
@@ -392,6 +408,11 @@ struct ShellWidgets {
     settings_combo: adw::ComboRow,
     update_button: gtk::Button,
     update_status: gtk::Label,
+    schema_stack: gtk::Stack,
+    schema_conn_dropdown: gtk::DropDown,
+    schema_status: gtk::Label,
+    schema_canvas: gtk::DrawingArea,
+    schema_tables: Rc<RefCell<Vec<ErdTable>>>,
 }
 
 #[relm4::component]
@@ -528,6 +549,14 @@ impl SimpleComponent for AppModel {
             update_button: widgets.update_button,
             update_status: widgets.update_status,
             update_feed: std::env::var("UNIDB_UPDATE_FEED").ok(),
+            schema_stack: widgets.schema_stack,
+            schema_conn_dropdown: widgets.schema_conn_dropdown,
+            schema_status: widgets.schema_status,
+            schema_canvas: widgets.schema_canvas,
+            schema_tables: widgets.schema_tables,
+            schema_ids: Vec::new(),
+            schema_connection: None,
+            schema_database: "main".to_string(),
         };
 
         if let Some(error) = &model.error {
@@ -564,7 +593,10 @@ impl SimpleComponent for AppModel {
                 if index == 5 {
                     self.load_history(&sender);
                 }
-                if index == 7 && !self.security_loaded {
+                if index == 7 {
+                    self.refresh_schema(&sender);
+                }
+                if index == 8 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -804,6 +836,7 @@ impl SimpleComponent for AppModel {
                 self.refresh_editor_connections(&sender);
                 self.refresh_designer(&sender);
                 self.refresh_transfer(&sender);
+                self.refresh_schema(&sender);
             }
             AppMsg::ConnectionFailed(message) => {
                 self.busy = false;
@@ -1481,6 +1514,43 @@ impl SimpleComponent for AppModel {
                 self.update_button.set_sensitive(true);
                 self.show_toast(&message);
             }
+            AppMsg::SchemaRefresh => {
+                self.load_schema(&sender);
+            }
+            AppMsg::SchemaConnectionSelected(index) => {
+                if let Some(id) = self.schema_ids.get(index as usize).copied() {
+                    self.schema_connection = Some(id);
+                    self.schema_database = self.designer_database_for(id);
+                    self.load_schema(&sender);
+                }
+            }
+            AppMsg::SchemaLoaded(tables) => {
+                let count = tables.len();
+                if count == 0 {
+                    self.schema_status
+                        .set_label("No tables in this database to draw.");
+                    self.schema_tables.borrow_mut().clear();
+                    self.schema_canvas.set_size_request(800, 200);
+                    self.schema_canvas.queue_draw();
+                } else {
+                    let layout = erd_layout(&tables, 1000.0);
+                    self.schema_status.set_label(&format!(
+                        "{} table{}, {} relationship{}.",
+                        count,
+                        plural(count),
+                        layout.edges.len(),
+                        plural(layout.edges.len())
+                    ));
+                    self.schema_canvas
+                        .set_size_request(layout.width as i32, layout.height as i32);
+                    *self.schema_tables.borrow_mut() = *tables;
+                    self.schema_canvas.queue_draw();
+                }
+            }
+            AppMsg::SchemaFailed(message) => {
+                self.schema_status.set_label(&message);
+                self.show_toast(&message);
+            }
             AppMsg::ExportReady(connection_id, format, path, sql) => {
                 let Some(service) = &self.service else {
                     return;
@@ -1528,6 +1598,7 @@ impl AppModel {
             4 => ("transfer", "Transfer"),
             5 => ("history", "History"),
             6 => ("settings", "Settings"),
+            7 => ("schema", "Schema"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -2427,6 +2498,90 @@ impl AppModel {
         }
     }
 
+    fn refresh_schema(&mut self, sender: &ComponentSender<Self>) {
+        let live: Vec<ConnectionProfile> = self
+            .connections
+            .iter()
+            .filter(|profile| self.connected.contains(&profile.id))
+            .cloned()
+            .collect();
+        self.schema_ids = live.iter().map(|profile| profile.id).collect();
+        let names: Vec<&str> = live.iter().map(|profile| profile.name.as_str()).collect();
+        self.schema_conn_dropdown
+            .set_model(Some(&gtk::StringList::new(&names)));
+        if live.is_empty() {
+            self.schema_connection = None;
+            self.schema_stack.set_visible_child_name("empty");
+            return;
+        }
+        self.schema_stack.set_visible_child_name("form");
+        let current = self
+            .schema_connection
+            .filter(|id| self.schema_ids.contains(id))
+            .unwrap_or(self.schema_ids[0]);
+        self.schema_connection = Some(current);
+        self.schema_database = self.designer_database_for(current);
+        let index = self
+            .schema_ids
+            .iter()
+            .position(|id| *id == current)
+            .unwrap_or(0);
+        self.schema_conn_dropdown.set_selected(index as u32);
+        self.load_schema(sender);
+    }
+
+    fn load_schema(&mut self, sender: &ComponentSender<Self>) {
+        let Some(connection_id) = self.schema_connection else {
+            return;
+        };
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        let database = self.schema_database.clone();
+        self.schema_status.set_label("Loading schema...");
+        self.handle.spawn(async move {
+            let tables = match service.list_tables(connection_id, &database).await {
+                Ok(tables) => tables,
+                Err(error) => {
+                    sender.input(AppMsg::SchemaFailed(format!(
+                        "Could not list tables: {}",
+                        error.user_message()
+                    )));
+                    return;
+                }
+            };
+            let mut erd_tables = Vec::new();
+            let mut failures = 0usize;
+            for table in tables.iter().take(24) {
+                let columns = match service
+                    .describe_table(connection_id, &database, table)
+                    .await
+                {
+                    Ok(columns) => columns,
+                    Err(_) => {
+                        failures += 1;
+                        continue;
+                    }
+                };
+                let foreign_keys = service
+                    .foreign_keys(connection_id, &database, table)
+                    .await
+                    .unwrap_or_default();
+                erd_tables.push(ErdTable {
+                    name: table.clone(),
+                    columns: columns.iter().map(|column| column.name.clone()).collect(),
+                    foreign_keys,
+                });
+            }
+            if failures > 0 {
+                eprintln!("{failures} tables could not be described for the ERD");
+            }
+            sender.input(AppMsg::SchemaLoaded(Box::new(erd_tables)));
+        });
+    }
+
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
         let Some(service) = &self.service else {
             return;
@@ -2595,6 +2750,163 @@ fn draw_chart(
         context.move_to(margin_left + bar_width + 6.0, y + bar_height * 0.8);
         let _ = context.show_text(&format!("{:.2}", point.value));
     }
+}
+
+fn draw_erd(context: &gtk::cairo::Context, width: i32, height: i32, tables: &[ErdTable]) {
+    let dark = adw::StyleManager::default().is_dark();
+    let layout: ErdLayout = erd_layout(tables, f64::from(width).max(600.0));
+    let text = if dark {
+        (0.92, 0.92, 0.92)
+    } else {
+        (0.13, 0.13, 0.13)
+    };
+    let muted = if dark {
+        (0.65, 0.65, 0.65)
+    } else {
+        (0.4, 0.4, 0.4)
+    };
+    let card_color = if dark {
+        (0.16, 0.17, 0.18)
+    } else {
+        (0.99, 0.99, 0.99)
+    };
+    let border = if dark {
+        (0.32, 0.34, 0.36)
+    } else {
+        (0.8, 0.82, 0.84)
+    };
+    let teal = (0.05, 0.58, 0.53);
+
+    // Relationship arrows first so cards sit above their starts.
+    for edge in &layout.edges {
+        let (Some(from), Some(to)) = (
+            layout.boxes.iter().find(|card| card.index == edge.from),
+            layout.boxes.iter().find(|card| card.index == edge.to),
+        ) else {
+            continue;
+        };
+        let start_x = from.x + from.width;
+        let start_y = from.y + from.height / 2.0;
+        let end_x = to.x;
+        let end_y = to.y + to.height / 2.0;
+        context.set_source_rgb(teal.0, teal.1, teal.2);
+        context.set_line_width(2.0);
+        let control = ((start_x + end_x) / 2.0, (start_y + end_y) / 2.0);
+        context.move_to(start_x, start_y);
+        context.curve_to(control.0, start_y, control.0, end_y, end_x, end_y);
+        let _ = context.stroke();
+        context.move_to(end_x, end_y);
+        context.line_to(end_x - 8.0, end_y - 5.0);
+        context.line_to(end_x - 8.0, end_y + 5.0);
+        context.close_path();
+        let _ = context.fill();
+        let _ = control;
+    }
+
+    for card in &layout.boxes {
+        rounded_rectangle(context, card.x, card.y, card.width, card.height, 8.0);
+        context.set_source_rgb(card_color.0, card_color.1, card_color.2);
+        let _ = context.fill_preserve();
+        context.set_source_rgb(border.0, border.1, border.2);
+        context.set_line_width(1.2);
+        let _ = context.stroke();
+
+        context.set_source_rgb(text.0, text.1, text.2);
+        context.select_font_face(
+            "Sans",
+            gtk::cairo::FontSlant::Normal,
+            gtk::cairo::FontWeight::Bold,
+        );
+        context.set_font_size(13.0);
+        context.move_to(card.x + 12.0, card.y + 20.0);
+        let _ = context.show_text(&card.title);
+
+        context.select_font_face(
+            "Sans",
+            gtk::cairo::FontSlant::Normal,
+            gtk::cairo::FontWeight::Normal,
+        );
+        context.set_font_size(11.0);
+        for (row, column) in card.columns.iter().enumerate() {
+            let y = card.y + 40.0 + row as f64 * 18.0;
+            let is_key = card.foreign_key_columns.contains(column);
+            context.set_source_rgb(
+                if is_key { teal.0 } else { muted.0 },
+                if is_key { teal.1 } else { muted.1 },
+                if is_key { teal.2 } else { muted.2 },
+            );
+            context.move_to(card.x + 12.0, y);
+            let _ = context.show_text(column);
+            if is_key {
+                context.set_font_size(9.0);
+                context.move_to(card.x + card.width - 30.0, y);
+                let _ = context.show_text("FK");
+                context.set_font_size(11.0);
+            }
+        }
+    }
+
+    // Relationship labels on top of the cards.
+    context.select_font_face(
+        "Sans",
+        gtk::cairo::FontSlant::Normal,
+        gtk::cairo::FontWeight::Normal,
+    );
+    context.set_font_size(10.0);
+    for edge in &layout.edges {
+        let (Some(from), Some(to)) = (
+            layout.boxes.iter().find(|card| card.index == edge.from),
+            layout.boxes.iter().find(|card| card.index == edge.to),
+        ) else {
+            continue;
+        };
+        let mid_x = (from.x + from.width + to.x) / 2.0;
+        let mid_y = (from.y + from.height / 2.0 + to.y + to.height / 2.0) / 2.0;
+        context.set_source_rgb(muted.0, muted.1, muted.2);
+        context.move_to(mid_x - 16.0, mid_y - 6.0);
+        let _ = context.show_text(&edge.label);
+    }
+    let _ = height;
+}
+
+fn rounded_rectangle(
+    context: &gtk::cairo::Context,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+) {
+    context.new_path();
+    context.arc(
+        x + radius,
+        y + radius,
+        radius,
+        std::f64::consts::PI,
+        1.5 * std::f64::consts::PI,
+    );
+    context.arc(
+        x + width - radius,
+        y + radius,
+        radius,
+        1.5 * std::f64::consts::PI,
+        0.0,
+    );
+    context.arc(
+        x + width - radius,
+        y + height - radius,
+        radius,
+        0.0,
+        0.5 * std::f64::consts::PI,
+    );
+    context.arc(
+        x + radius,
+        y + height - radius,
+        radius,
+        0.5 * std::f64::consts::PI,
+        std::f64::consts::PI,
+    );
+    context.close_path();
 }
 
 fn plural(count: usize) -> &'static str {
@@ -3423,6 +3735,67 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         .child(&security_page)
         .build();
 
+    // Schema page.
+    let schema_status = gtk::Label::builder()
+        .label("Choose a live connection.")
+        .xalign(0.0)
+        .wrap(true)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    schema_status.add_css_class("unidb-muted");
+    let schema_conn_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    schema_conn_dropdown.set_hexpand(true);
+    {
+        let sender = sender.clone();
+        schema_conn_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::SchemaConnectionSelected(dropdown.selected()));
+        });
+    }
+    let schema_refresh_button = gtk::Button::with_label("Refresh");
+    {
+        let sender = sender.clone();
+        schema_refresh_button.connect_clicked(move |_| sender.input(AppMsg::SchemaRefresh));
+    }
+    let schema_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    schema_toolbar.set_margin_all(10);
+    schema_toolbar.append(&schema_conn_dropdown);
+    schema_toolbar.append(&schema_refresh_button);
+    let schema_tables: Rc<RefCell<Vec<ErdTable>>> = Rc::new(RefCell::new(Vec::new()));
+    let schema_canvas = gtk::DrawingArea::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .height_request(480)
+        .build();
+    {
+        let tables = Rc::clone(&schema_tables);
+        schema_canvas.set_draw_func(move |_area, context, width, height| {
+            draw_erd(context, width, height, &tables.borrow());
+        });
+    }
+    let schema_scroll = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .child(&schema_canvas)
+        .build();
+    let schema_form = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    schema_form.append(&schema_toolbar);
+    schema_form.append(&schema_status);
+    schema_form.append(&schema_scroll);
+    let schema_empty = adw::StatusPage::builder()
+        .icon_name("view-grid-symbolic")
+        .title("No live connection")
+        .description(
+            "Connect to a SQL database in Connections, then open Schema to draw its relationships.",
+        )
+        .build();
+    let schema_stack = gtk::Stack::new();
+    schema_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    schema_stack.add_named(&schema_empty, Some("empty"));
+    schema_stack.add_named(&schema_form, Some("form"));
+    schema_stack.set_visible_child_name("empty");
+
     let page_stack = gtk::Stack::new();
     page_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     page_stack.add_named(&connections_stack, Some("connections"));
@@ -3432,6 +3805,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.add_named(&transfer_stack, Some("transfer"));
     page_stack.add_named(&history_box, Some("history"));
     page_stack.add_named(&settings_scroll, Some("settings"));
+    page_stack.add_named(&schema_stack, Some("schema"));
     page_stack.add_named(&security_scroll, Some("security"));
 
     let content_page = adw::NavigationPage::new(&page_stack, "Connections");
@@ -3446,6 +3820,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         ("document-send-symbolic", "Transfer"),
         ("document-open-recent-symbolic", "History"),
         ("emblem-system-symbolic", "Settings"),
+        ("view-grid-symbolic", "Schema"),
         ("security-high-symbolic", "Security"),
     ] {
         let row = gtk::ListBoxRow::new();
@@ -3580,6 +3955,11 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         settings_combo,
         update_button,
         update_status,
+        schema_stack,
+        schema_conn_dropdown,
+        schema_status,
+        schema_canvas,
+        schema_tables,
     }
 }
 
