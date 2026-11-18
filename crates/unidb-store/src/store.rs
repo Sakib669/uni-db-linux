@@ -30,6 +30,15 @@ pub struct AuditEntry {
     pub detail: serde_json::Value,
 }
 
+/// One applied migration row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedMigration {
+    pub connection_id: Uuid,
+    pub name: String,
+    pub checksum: String,
+    pub applied_at: String,
+}
+
 /// Saved query row, returned by `list_saved_queries`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedQuery {
@@ -571,6 +580,60 @@ impl Store {
             .map_err(|error| {
                 UniDbError::internal("Could not read the saved queries").with_source(error)
             })
+    }
+
+    /// Lists applied migrations for one connection.
+    pub async fn list_applied_migrations(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<Vec<AppliedMigration>, UniDbError> {
+        let rows = sqlx::query(
+            "SELECT connection_id, name, checksum, applied_at FROM applied_migrations
+             WHERE connection_id = ? ORDER BY name ASC",
+        )
+        .bind(connection_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| {
+            UniDbError::internal("Could not list applied migrations").with_source(error)
+        })?;
+        rows.into_iter()
+            .map(|row| {
+                let connection: String = row.try_get("connection_id")?;
+                Ok(AppliedMigration {
+                    connection_id: Uuid::parse_str(&connection).unwrap_or_else(|_| Uuid::nil()),
+                    name: row.try_get("name")?,
+                    checksum: row.try_get("checksum")?,
+                    applied_at: row.try_get("applied_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|error| {
+                UniDbError::internal("Could not read applied migrations").with_source(error)
+            })
+    }
+
+    /// Records one applied migration.
+    pub async fn record_applied_migration(
+        &self,
+        connection_id: Uuid,
+        name: &str,
+        checksum: &str,
+    ) -> Result<(), UniDbError> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO applied_migrations (connection_id, name, checksum, applied_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(connection_id.to_string())
+        .bind(name)
+        .bind(checksum)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            UniDbError::internal("Could not record the applied migration").with_source(error)
+        })?;
+        Ok(())
     }
 
     /// Deletes one saved query and returns how many rows went away.

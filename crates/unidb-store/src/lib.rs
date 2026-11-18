@@ -5,4 +5,4 @@ pub mod secrets;
 pub mod store;
 
 pub use secrets::{KeyringKeyProvider, MasterKeyProvider, MemoryKeyProvider, SecretBox};
-pub use store::{AuditEntry, HistoryEntry, SavedQuery, Store};
+pub use store::{AppliedMigration, AuditEntry, HistoryEntry, SavedQuery, Store};
