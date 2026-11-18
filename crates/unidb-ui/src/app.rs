@@ -1708,6 +1708,7 @@ impl SimpleComponent for AppModel {
                 let Some(table) = self.builder_tables.get(index as usize).cloned() else {
                     return;
                 };
+                self.builder_table = Some(table.clone());
                 let Some(id) = self.builder_connection else {
                     return;
                 };
