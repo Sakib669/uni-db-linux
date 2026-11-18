@@ -14,9 +14,9 @@ pub use migrations::{MigrationFile, MigrationReport, checksum, load_migrations, 
 pub use paths::default_data_dir;
 pub use security::{CheckStatus, SecurityCheck, SecurityReport};
 pub use service::{AppService, ExportReport, ImportOptions, ImportReport};
-pub use unidb_core::ForeignKeyInfo;
+pub use unidb_core::{ForeignKeyInfo, ResultDiff};
 pub use unidb_store::AuditEntry;
-pub use unidb_store::{HistoryEntry, SavedQuery};
+pub use unidb_store::{HistoryEntry, SavedQuery, TableSnapshot};
 pub use update::{ReleaseInfo, fetch_latest, is_newer, parse_release};
 
 /// Grid and status text for a value, kept here so the interface never formats

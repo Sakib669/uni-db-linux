@@ -23,7 +23,7 @@ impl SqlDialect {
         }
     }
 
-    fn quote(self, identifier: &str) -> String {
+    pub fn quote(self, identifier: &str) -> String {
         match self {
             Self::Mysql => format!("`{identifier}`"),
             _ => format!("\"{identifier}\""),

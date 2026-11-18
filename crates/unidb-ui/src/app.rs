@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use unidb_app::{
     AppService, AuditEntry, CheckStatus, HistoryEntry, ImportOptions, ImportReport, MigrationFile,
-    MigrationReport, ReleaseInfo, SavedQuery, SecurityReport,
+    MigrationReport, ReleaseInfo, ResultDiff, SavedQuery, SecurityReport, TableSnapshot,
 };
 use unidb_core::{
     ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, ErrorCategory,
@@ -202,6 +202,17 @@ struct AppModel {
     migrations_files: Vec<MigrationFile>,
     migrations_applied: Vec<String>,
     migrations_warnings: Vec<String>,
+    snapshots_conn_dropdown: gtk::DropDown,
+    snapshots_table_entry: gtk::Entry,
+    snapshots_note_entry: gtk::Entry,
+    snapshots_create_button: gtk::Button,
+    snapshots_refresh_button: gtk::Button,
+    snapshots_status: gtk::Label,
+    snapshots_list: gtk::ListBox,
+    snapshots_ids: Vec<Uuid>,
+    snapshots_connection: Option<Uuid>,
+    snapshots_items: Vec<TableSnapshot>,
+    snapshots_rows: Vec<gtk::ListBoxRow>,
 }
 
 enum AppMsg {
@@ -310,6 +321,18 @@ enum AppMsg {
     MigrationsApply,
     MigrationsApplied(Box<MigrationReport>),
     MigrationsApplyFailed(String),
+    SnapshotsConnChanged(usize),
+    SnapshotsRefresh,
+    SnapshotsLoaded(Vec<TableSnapshot>),
+    SnapshotsFailed(String),
+    TakeSnapshot,
+    SnapshotTaken(Box<TableSnapshot>),
+    CompareSnapshot(Uuid),
+    SnapshotDiffed(Box<(String, ResultDiff)>),
+    RestoreSnapshot(Uuid),
+    SnapshotRestored(usize, String),
+    DeleteSnapshot(Uuid),
+    SnapshotDeleted,
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -420,6 +443,18 @@ impl std::fmt::Debug for AppMsg {
             Self::MigrationsApply => "MigrationsApply",
             Self::MigrationsApplied(_) => "MigrationsApplied",
             Self::MigrationsApplyFailed(_) => "MigrationsApplyFailed",
+            Self::SnapshotsConnChanged(_) => "SnapshotsConnChanged",
+            Self::SnapshotsRefresh => "SnapshotsRefresh",
+            Self::SnapshotsLoaded(_) => "SnapshotsLoaded",
+            Self::SnapshotsFailed(_) => "SnapshotsFailed",
+            Self::TakeSnapshot => "TakeSnapshot",
+            Self::SnapshotTaken(_) => "SnapshotTaken",
+            Self::CompareSnapshot(_) => "CompareSnapshot",
+            Self::SnapshotDiffed(_) => "SnapshotDiffed",
+            Self::RestoreSnapshot(_) => "RestoreSnapshot",
+            Self::SnapshotRestored(_, _) => "SnapshotRestored",
+            Self::DeleteSnapshot(_) => "DeleteSnapshot",
+            Self::SnapshotDeleted => "SnapshotDeleted",
         })
     }
 }
@@ -520,6 +555,13 @@ struct ShellWidgets {
     migrations_status: gtk::Label,
     migrations_list: gtk::ListBox,
     migrations_preview_buffer: sourceview5::Buffer,
+    snapshots_conn_dropdown: gtk::DropDown,
+    snapshots_table_entry: gtk::Entry,
+    snapshots_note_entry: gtk::Entry,
+    snapshots_create_button: gtk::Button,
+    snapshots_refresh_button: gtk::Button,
+    snapshots_status: gtk::Label,
+    snapshots_list: gtk::ListBox,
 }
 
 #[relm4::component]
@@ -700,6 +742,17 @@ impl SimpleComponent for AppModel {
             migrations_files: Vec::new(),
             migrations_applied: Vec::new(),
             migrations_warnings: Vec::new(),
+            snapshots_conn_dropdown: widgets.snapshots_conn_dropdown,
+            snapshots_table_entry: widgets.snapshots_table_entry,
+            snapshots_note_entry: widgets.snapshots_note_entry,
+            snapshots_create_button: widgets.snapshots_create_button,
+            snapshots_refresh_button: widgets.snapshots_refresh_button,
+            snapshots_status: widgets.snapshots_status,
+            snapshots_list: widgets.snapshots_list,
+            snapshots_ids: Vec::new(),
+            snapshots_connection: None,
+            snapshots_items: Vec::new(),
+            snapshots_rows: Vec::new(),
         };
 
         if let Some(error) = &model.error {
@@ -735,6 +788,7 @@ impl SimpleComponent for AppModel {
                 }
                 if index == 5 {
                     self.load_history(&sender);
+                    self.refresh_snapshots_connections(&sender);
                 }
                 if index == 7 {
                     self.refresh_schema(&sender);
@@ -2071,6 +2125,189 @@ impl SimpleComponent for AppModel {
                 self.migrations_status.set_label(&error);
                 self.show_toast(&error);
             }
+            AppMsg::SnapshotsConnChanged(index) => {
+                if let Some(id) = self.snapshots_ids.get(index) {
+                    self.snapshots_connection = Some(*id);
+                    self.update_controls();
+                    self.load_snapshots(&sender);
+                }
+            }
+            AppMsg::SnapshotsRefresh => {
+                self.load_snapshots(&sender);
+            }
+            AppMsg::SnapshotsLoaded(items) => {
+                self.snapshots_items = items;
+                self.populate_snapshots(&sender);
+                self.snapshots_status.set_label(&format!(
+                    "{} snapshot{} stored.",
+                    self.snapshots_items.len(),
+                    plural(self.snapshots_items.len())
+                ));
+            }
+            AppMsg::SnapshotsFailed(error) => {
+                self.snapshots_status.set_label(&error);
+                self.show_toast(&error);
+            }
+            AppMsg::TakeSnapshot => {
+                let Some(connection_id) = self.snapshots_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let table = self.snapshots_table_entry.text().trim().to_string();
+                if table.is_empty() {
+                    self.show_toast("Enter a table name first.");
+                    return;
+                }
+                let note_text = self.snapshots_note_entry.text().trim().to_string();
+                let note = if note_text.is_empty() {
+                    None
+                } else {
+                    Some(note_text)
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.snapshots_status
+                    .set_label(&format!("Capturing snapshot for {table}..."));
+                self.handle.spawn(async move {
+                    match service
+                        .create_snapshot(connection_id, "main", &table, note)
+                        .await
+                    {
+                        Ok(snapshot) => sender.input(AppMsg::SnapshotTaken(Box::new(snapshot))),
+                        Err(error) => sender.input(AppMsg::SnapshotsFailed(format!(
+                            "Snapshot failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::SnapshotTaken(snapshot) => {
+                self.snapshots_note_entry.set_text("");
+                self.show_toast(&format!(
+                    "Snapshot captured for {} ({} rows).",
+                    snapshot.table_name, snapshot.row_count
+                ));
+                self.load_snapshots(&sender);
+            }
+            AppMsg::CompareSnapshot(id) => {
+                let Some(connection_id) = self.snapshots_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let table_name = self
+                    .snapshots_items
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(|item| item.table_name.clone())
+                    .unwrap_or_else(|| "table".to_string());
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.snapshots_status
+                    .set_label(&format!("Comparing snapshot for {table_name}..."));
+                self.handle.spawn(async move {
+                    match service.diff_snapshot(connection_id, id).await {
+                        Ok(diff) => {
+                            sender.input(AppMsg::SnapshotDiffed(Box::new((table_name, diff))))
+                        }
+                        Err(error) => sender.input(AppMsg::SnapshotsFailed(format!(
+                            "Comparison failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::SnapshotDiffed(boxed) => {
+                let (table, diff) = *boxed;
+                let summary = format!(
+                    "Comparison for {table}: {} unchanged, {} changed, {} added, {} removed",
+                    diff.unchanged, diff.changed, diff.added, diff.removed
+                );
+                self.snapshots_status.set_label(&summary);
+                let mut lines = vec![summary.clone()];
+                for row in &diff.details {
+                    let before = row
+                        .before
+                        .iter()
+                        .map(unidb_app::value_text)
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    let after = row
+                        .after
+                        .iter()
+                        .map(unidb_app::value_text)
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    lines.push(format!(
+                        "{} key={} before=[{}] after=[{}]",
+                        row.change.label(),
+                        row.key,
+                        before,
+                        after
+                    ));
+                }
+                self.plan_buffer.set_text(&lines.join("\n"));
+                self.plan_revealer.set_reveal_child(true);
+                self.show_toast(&summary);
+            }
+            AppMsg::RestoreSnapshot(id) => {
+                let Some(connection_id) = self.snapshots_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let table_name = self
+                    .snapshots_items
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(|item| item.table_name.clone())
+                    .unwrap_or_else(|| "table".to_string());
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.snapshots_status
+                    .set_label(&format!("Restoring {table_name} from snapshot..."));
+                self.handle.spawn(async move {
+                    match service.restore_snapshot(connection_id, id).await {
+                        Ok(count) => sender.input(AppMsg::SnapshotRestored(count, table_name)),
+                        Err(error) => sender.input(AppMsg::SnapshotsFailed(format!(
+                            "Restore failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::SnapshotRestored(count, table) => {
+                let msg = format!("Restored {count} rows to {table}.");
+                self.snapshots_status.set_label(&msg);
+                self.show_toast(&msg);
+            }
+            AppMsg::DeleteSnapshot(id) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.delete_snapshot(id).await {
+                        Ok(_) => sender.input(AppMsg::SnapshotDeleted),
+                        Err(error) => sender.input(AppMsg::SnapshotsFailed(format!(
+                            "Delete failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::SnapshotDeleted => {
+                self.show_toast("Snapshot deleted.");
+                self.load_snapshots(&sender);
+            }
         }
     }
 }
@@ -2127,6 +2364,10 @@ impl AppModel {
             .set_sensitive(ready && !self.busy);
         self.migrations_apply_button
             .set_sensitive(ready && !self.busy);
+        self.snapshots_create_button
+            .set_sensitive(ready && !self.busy && self.snapshots_connection.is_some());
+        self.snapshots_refresh_button
+            .set_sensitive(ready && !self.busy && self.snapshots_connection.is_some());
     }
 
     fn load_connections(&self, sender: &ComponentSender<Self>) {
@@ -3401,6 +3642,143 @@ impl AppModel {
         }
     }
 
+    fn refresh_snapshots_connections(&mut self, sender: &ComponentSender<Self>) {
+        self.snapshots_ids = self.connections.iter().map(|profile| profile.id).collect();
+        let names: Vec<String> = self
+            .connections
+            .iter()
+            .map(|profile| {
+                if self.connected.contains(&profile.id) {
+                    format!("{} (live)", profile.name)
+                } else {
+                    profile.name.clone()
+                }
+            })
+            .collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.snapshots_conn_dropdown
+            .set_model(Some(&gtk::StringList::new(&refs)));
+        if self.snapshots_ids.is_empty() {
+            self.snapshots_connection = None;
+            self.snapshots_status
+                .set_label("Save a connection first to take or view snapshots.");
+            self.update_controls();
+            return;
+        }
+        let default_id = self
+            .connections
+            .iter()
+            .find(|p| self.connected.contains(&p.id))
+            .map(|p| p.id)
+            .unwrap_or(self.snapshots_ids[0]);
+        let current = self
+            .snapshots_connection
+            .filter(|id| self.snapshots_ids.contains(id))
+            .unwrap_or(default_id);
+        self.snapshots_connection = Some(current);
+        let index = self
+            .snapshots_ids
+            .iter()
+            .position(|id| *id == current)
+            .unwrap_or(0);
+        self.snapshots_conn_dropdown.set_selected(index as u32);
+        self.update_controls();
+        self.load_snapshots(sender);
+    }
+
+    fn load_snapshots(&mut self, sender: &ComponentSender<Self>) {
+        let Some(connection_id) = self.snapshots_connection else {
+            return;
+        };
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.handle.spawn(async move {
+            match service.list_snapshots(connection_id).await {
+                Ok(items) => sender.input(AppMsg::SnapshotsLoaded(items)),
+                Err(error) => sender.input(AppMsg::SnapshotsFailed(format!(
+                    "Could not read snapshots: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
+    fn populate_snapshots(&mut self, sender: &ComponentSender<Self>) {
+        for row in self.snapshots_rows.drain(..) {
+            self.snapshots_list.remove(&row);
+        }
+        if self.snapshots_items.is_empty() {
+            let row = plain_row("No table snapshots yet", "camera-photo-symbolic");
+            self.snapshots_list.append(&row);
+            self.snapshots_rows.push(row);
+            return;
+        }
+        let items = self.snapshots_items.clone();
+        for item in items {
+            let row = gtk::ListBoxRow::new();
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            content.set_margin_top(8);
+            content.set_margin_bottom(8);
+            content.set_margin_start(10);
+            content.set_margin_end(10);
+            content.append(&gtk::Image::from_icon_name("camera-photo-symbolic"));
+
+            let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            text_box.set_hexpand(true);
+            let title_text = match &item.note {
+                Some(note) if !note.is_empty() => format!("{}  ({})", item.table_name, note),
+                _ => item.table_name.clone(),
+            };
+            let title = gtk::Label::new(Some(&title_text));
+            title.set_xalign(0.0);
+            let subtitle = gtk::Label::new(Some(&format!(
+                "{}  |  {} row{}  |  {}",
+                item.database_name,
+                item.row_count,
+                plural(item.row_count),
+                item.created_at
+            )));
+            subtitle.set_xalign(0.0);
+            subtitle.add_css_class("unidb-muted");
+            text_box.append(&title);
+            text_box.append(&subtitle);
+            content.append(&text_box);
+
+            let compare_btn = gtk::Button::with_label("Compare");
+            {
+                let sender = sender.clone();
+                let id = item.id;
+                compare_btn.connect_clicked(move |_| sender.input(AppMsg::CompareSnapshot(id)));
+            }
+            content.append(&compare_btn);
+
+            let restore_btn = gtk::Button::with_label("Restore");
+            restore_btn.add_css_class("suggested-action");
+            {
+                let sender = sender.clone();
+                let id = item.id;
+                restore_btn.connect_clicked(move |_| sender.input(AppMsg::RestoreSnapshot(id)));
+            }
+            content.append(&restore_btn);
+
+            let delete_btn = gtk::Button::with_label("Delete");
+            delete_btn.add_css_class("destructive-action");
+            {
+                let sender = sender.clone();
+                let id = item.id;
+                delete_btn.connect_clicked(move |_| sender.input(AppMsg::DeleteSnapshot(id)));
+            }
+            content.append(&delete_btn);
+
+            row.set_child(Some(&content));
+            self.snapshots_list.append(&row);
+            self.snapshots_rows.push(row);
+        }
+    }
+
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
         let Some(service) = &self.service else {
             return;
@@ -4515,9 +4893,76 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         .build();
     saved_group.add(&saved_row_box);
     saved_group.add(&saved_list);
+
+    let snapshots_conn_dropdown = gtk::DropDown::builder()
+        .tooltip_text("Select connection for table snapshots")
+        .build();
+    {
+        let sender = sender.clone();
+        snapshots_conn_dropdown.connect_selected_notify(move |dropdown| {
+            let selected = dropdown.selected();
+            if selected != gtk::INVALID_LIST_POSITION {
+                sender.input(AppMsg::SnapshotsConnChanged(selected as usize));
+            }
+        });
+    }
+    let snapshots_table_entry = gtk::Entry::builder()
+        .placeholder_text("Table name (e.g. users)")
+        .hexpand(true)
+        .build();
+    let snapshots_note_entry = gtk::Entry::builder()
+        .placeholder_text("Note (optional)")
+        .hexpand(true)
+        .build();
+    let snapshots_create_button = gtk::Button::with_label("Take snapshot");
+    snapshots_create_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        snapshots_create_button.connect_clicked(move |_| sender.input(AppMsg::TakeSnapshot));
+    }
+    let snapshots_refresh_button = gtk::Button::with_label("Refresh");
+    {
+        let sender = sender.clone();
+        snapshots_refresh_button.connect_clicked(move |_| sender.input(AppMsg::SnapshotsRefresh));
+    }
+    let snapshots_row1 = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    snapshots_row1.append(&snapshots_conn_dropdown);
+    snapshots_row1.append(&snapshots_table_entry);
+    snapshots_row1.append(&snapshots_refresh_button);
+
+    let snapshots_row2 = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    snapshots_row2.append(&snapshots_note_entry);
+    snapshots_row2.append(&snapshots_create_button);
+
+    let snapshots_controls_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    snapshots_controls_box.set_margin_bottom(6);
+    snapshots_controls_box.append(&snapshots_row1);
+    snapshots_controls_box.append(&snapshots_row2);
+
+    let snapshots_status = gtk::Label::builder()
+        .label("Select a connection to view or capture snapshots.")
+        .xalign(0.0)
+        .wrap(true)
+        .margin_bottom(6)
+        .build();
+    snapshots_status.add_css_class("unidb-muted");
+
+    let snapshots_list = gtk::ListBox::new();
+    snapshots_list.set_selection_mode(gtk::SelectionMode::None);
+    snapshots_list.add_css_class("boxed-list");
+
+    let snapshots_group = adw::PreferencesGroup::builder()
+        .title("Table snapshots")
+        .description("Point in time backups with keyed diff and transactional restore")
+        .build();
+    snapshots_group.add(&snapshots_controls_box);
+    snapshots_group.add(&snapshots_status);
+    snapshots_group.add(&snapshots_list);
+
     let history_page = adw::PreferencesPage::new();
     history_page.add(&history_group);
     history_page.add(&saved_group);
+    history_page.add(&snapshots_group);
     let history_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
@@ -5127,6 +5572,13 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         migrations_status,
         migrations_list,
         migrations_preview_buffer,
+        snapshots_conn_dropdown,
+        snapshots_table_entry,
+        snapshots_note_entry,
+        snapshots_create_button,
+        snapshots_refresh_button,
+        snapshots_status,
+        snapshots_list,
     }
 }
 

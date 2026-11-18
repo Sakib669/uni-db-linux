@@ -18,23 +18,24 @@ Updated 2026-11-18 after round 22 of the autonomous build.
 - Packaging: verified `.deb`, desktop entry, icon, AppStream, SBOM, release workflow, AppImage and Flatpak scripts, update notice with tests.
 - Visual query builder with dialect SQL generation, tests, and a verified Builder page.
 - Workflow: deterministic fake data, masking, migration runner with ledger, splitter, tests, and full Migrations page UI with container screenshots.
+- Time travel and archive: point in time table snapshots in store, keyed diff comparison, transactional restore, audit logging, and History page UI with container screenshots.
 
 ## Current gates
 
-- `cargo test --workspace --no-default-features`: 117 tests passing.
+- `cargo test --workspace --no-default-features`: 119 tests passing.
 - `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`: clean.
 - `cargo fmt --all`: clean.
-- GUI build and container screenshots current for all major surfaces (including Migrations page).
+- GUI build and container screenshots current for all major surfaces (including Migrations and Snapshots).
 
 ## Remaining, in roadmap order
 
-- Workflow: time travel and archive, multi database query, team bundles, git status surface.
+- Workflow: multi database query, team bundles, git status surface.
 - Platform: AI schema doctor, scheduled jobs, WASM plugin runtime, offline first sync.
 - Verification: `/check verify`, `/check review`, `/test` per feature.
 - Hardening: arm64 packages, accessibility pass, performance on large results, i18n, final security review, dashboard with saved charts.
 
 ## Next steps
 
-1. Time travel and archive, then multi database query and team bundles.
+1. Multi database query and team bundles.
 2. Platform feature decisions and slices.
 3. Verification and hardening pass across the built areas.

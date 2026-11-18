@@ -21,7 +21,7 @@ pub use mask::{EMAIL_MASK, TEXT_MASK, mask_rows, mask_value};
 pub use profile::{ConnectionProfile, ParsedConnectionUrl, SslMode};
 pub use schema::{
     ColumnDesign, ForeignKeyInfo, SqlDialect, TableColumnInfo, TableDesign, alter_table_sql,
-    create_table_sql,
+    create_table_sql, valid_identifier,
 };
 pub use sql_split::split_statements;
 pub use transfer::{

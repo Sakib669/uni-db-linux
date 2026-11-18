@@ -264,17 +264,43 @@ sleep 2
 import -window root /app/target/history-page.png
 
 # Save the current editor statement as a named query.
-xdotool mousemove $((X + 600)) $((Y + 321))
+xdotool mousemove $((X + 600)) $((Y + 436))
 sleep 0.3
 xdotool click 1
 sleep 0.3
 xdotool type --delay 25 "Recent users"
 sleep 0.3
-xdotool mousemove $((X + 895)) $((Y + 321))
+xdotool mousemove $((X + 895)) $((Y + 436))
 sleep 0.2
 xdotool click 1
 sleep 2
 import -window root /app/target/history-saved.png
+
+# Capture a table snapshot of users in the Table snapshots section.
+xdotool mousemove $((X + 710)) $((Y + 604))
+sleep 0.2
+xdotool click 1
+sleep 0.2
+xdotool type --delay 25 "users"
+sleep 0.2
+xdotool mousemove $((X + 560)) $((Y + 644))
+sleep 0.2
+xdotool click 1
+sleep 0.2
+xdotool type --delay 25 "Before audit"
+sleep 0.2
+xdotool mousemove $((X + 908)) $((Y + 644))
+sleep 0.2
+xdotool click 1
+sleep 2
+import -window root /app/target/snapshots-created.png
+
+# Click Compare on the snapshot row.
+xdotool mousemove $((X + 798)) $((Y + 715))
+sleep 0.2
+xdotool click 1
+sleep 2
+import -window root /app/target/snapshots-compared.png
 
 # Settings page is the seventh sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 314))

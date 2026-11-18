@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
@@ -13,7 +14,7 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use unidb_core::{ConnectionProfile, Engine, ErrorCategory, SslMode, UniDbError};
+use unidb_core::{ConnectionProfile, Engine, ErrorCategory, QueryResult, SslMode, UniDbError};
 
 use crate::secrets::{
     EncryptedSecret, MasterKey, MasterKeyProvider, SecretBox, connection_password_aad,
@@ -37,6 +38,47 @@ pub struct AppliedMigration {
     pub name: String,
     pub checksum: String,
     pub applied_at: String,
+}
+
+/// One point in time table snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableSnapshot {
+    pub id: Uuid,
+    pub connection_id: Uuid,
+    pub database_name: String,
+    pub table_name: String,
+    pub row_count: usize,
+    pub note: Option<String>,
+    pub data_json: String,
+    pub created_at: String,
+}
+
+impl TableSnapshot {
+    /// Builds a snapshot from a query result.
+    pub fn from_query_result(
+        connection_id: Uuid,
+        database_name: impl Into<String>,
+        table_name: impl Into<String>,
+        note: Option<String>,
+        result: &QueryResult,
+    ) -> Result<Self, serde_json::Error> {
+        let data_json = serde_json::to_string(result)?;
+        Ok(Self {
+            id: Uuid::new_v4(),
+            connection_id,
+            database_name: database_name.into(),
+            table_name: table_name.into(),
+            row_count: result.rows.len(),
+            note,
+            data_json,
+            created_at: Utc::now().to_rfc3339(),
+        })
+    }
+
+    /// Deserializes the snapshot data into a QueryResult.
+    pub fn to_query_result(&self) -> Result<QueryResult, serde_json::Error> {
+        serde_json::from_str(&self.data_json)
+    }
 }
 
 /// Saved query row, returned by `list_saved_queries`.
@@ -634,6 +676,110 @@ impl Store {
             UniDbError::internal("Could not record the applied migration").with_source(error)
         })?;
         Ok(())
+    }
+
+    /// Saves a point in time table snapshot.
+    pub async fn save_snapshot(&self, snapshot: &TableSnapshot) -> Result<(), UniDbError> {
+        sqlx::query(
+            "INSERT INTO table_snapshots (id, connection_id, database_name, table_name, row_count, note, data_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(snapshot.id.to_string())
+        .bind(snapshot.connection_id.to_string())
+        .bind(&snapshot.database_name)
+        .bind(&snapshot.table_name)
+        .bind(snapshot.row_count as i64)
+        .bind(&snapshot.note)
+        .bind(&snapshot.data_json)
+        .bind(&snapshot.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            UniDbError::internal("Could not save the snapshot").with_source(error)
+        })?;
+        Ok(())
+    }
+
+    /// Lists table snapshots for one connection, newest first.
+    pub async fn list_snapshots(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<Vec<TableSnapshot>, UniDbError> {
+        let rows = sqlx::query(
+            "SELECT id, connection_id, database_name, table_name, row_count, note, data_json, created_at
+             FROM table_snapshots WHERE connection_id = ? ORDER BY created_at DESC",
+        )
+        .bind(connection_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| {
+            UniDbError::internal("Could not list the snapshots").with_source(error)
+        })?;
+        rows.into_iter()
+            .map(|row| {
+                let id: String = row.try_get("id")?;
+                let connection: String = row.try_get("connection_id")?;
+                let row_count: i64 = row.try_get("row_count")?;
+                Ok(TableSnapshot {
+                    id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()),
+                    connection_id: Uuid::parse_str(&connection).unwrap_or_else(|_| Uuid::nil()),
+                    database_name: row.try_get("database_name")?,
+                    table_name: row.try_get("table_name")?,
+                    row_count: row_count.max(0) as usize,
+                    note: row.try_get("note")?,
+                    data_json: row.try_get("data_json")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|error| {
+                UniDbError::internal("Could not read the snapshots").with_source(error)
+            })
+    }
+
+    /// Fetches one snapshot by id.
+    pub async fn get_snapshot(&self, id: Uuid) -> Result<Option<TableSnapshot>, UniDbError> {
+        let row = sqlx::query(
+            "SELECT id, connection_id, database_name, table_name, row_count, note, data_json, created_at
+             FROM table_snapshots WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| {
+            UniDbError::internal("Could not get the snapshot").with_source(error)
+        })?;
+        row.map(|row| {
+            let id_str: String = row.try_get("id")?;
+            let connection: String = row.try_get("connection_id")?;
+            let row_count: i64 = row.try_get("row_count")?;
+            Ok(TableSnapshot {
+                id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
+                connection_id: Uuid::parse_str(&connection).unwrap_or_else(|_| Uuid::nil()),
+                database_name: row.try_get("database_name")?,
+                table_name: row.try_get("table_name")?,
+                row_count: row_count.max(0) as usize,
+                note: row.try_get("note")?,
+                data_json: row.try_get("data_json")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .transpose()
+        .map_err(|error: sqlx::Error| {
+            UniDbError::internal("Could not read the snapshot row").with_source(error)
+        })
+    }
+
+    /// Deletes one snapshot by id.
+    pub async fn delete_snapshot(&self, id: Uuid) -> Result<bool, UniDbError> {
+        let result = sqlx::query("DELETE FROM table_snapshots WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not delete the snapshot").with_source(error)
+            })?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Deletes one saved query and returns how many rows went away.

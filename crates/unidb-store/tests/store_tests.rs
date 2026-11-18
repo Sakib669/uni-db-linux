@@ -288,3 +288,76 @@ async fn saved_queries_round_trip_and_history_can_be_cleared() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn table_snapshots_round_trip_and_can_be_deleted() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unidb.db");
+    let provider = test_provider();
+    let store = Store::open(&path, &provider).await.expect("open store");
+
+    let conn_id = uuid::Uuid::new_v4();
+    let query_result = unidb_core::QueryResult {
+        columns: vec![
+            unidb_core::Column {
+                name: "id".to_string(),
+                type_name: "INTEGER".to_string(),
+                nullable: false,
+            },
+            unidb_core::Column {
+                name: "name".to_string(),
+                type_name: "TEXT".to_string(),
+                nullable: true,
+            },
+        ],
+        rows: vec![
+            vec![
+                unidb_core::Value::Int(1),
+                unidb_core::Value::Text("Ada".to_string()),
+            ],
+            vec![
+                unidb_core::Value::Int(2),
+                unidb_core::Value::Text("Alan Turing".to_string()),
+            ],
+        ],
+        affected_rows: None,
+        elapsed_ms: 5,
+    };
+
+    let snapshot = unidb_store::TableSnapshot::from_query_result(
+        conn_id,
+        "main",
+        "users",
+        Some("pre-migration snapshot".to_string()),
+        &query_result,
+    )
+    .expect("build snapshot");
+
+    store.save_snapshot(&snapshot).await.expect("save snapshot");
+
+    let listed = store.list_snapshots(conn_id).await.expect("list snapshots");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].table_name, "users");
+    assert_eq!(listed[0].row_count, 2);
+    assert_eq!(listed[0].note.as_deref(), Some("pre-migration snapshot"));
+
+    let fetched = store
+        .get_snapshot(snapshot.id)
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(fetched.id, snapshot.id);
+    let decoded = fetched.to_query_result().expect("decode query result");
+    assert_eq!(decoded.rows.len(), 2);
+    assert_eq!(decoded.columns[0].name, "id");
+    assert_eq!(decoded.columns[1].name, "name");
+
+    assert!(store.delete_snapshot(snapshot.id).await.expect("delete"));
+    assert!(
+        store
+            .list_snapshots(conn_id)
+            .await
+            .expect("list")
+            .is_empty()
+    );
+}

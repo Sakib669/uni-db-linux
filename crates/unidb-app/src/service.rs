@@ -17,9 +17,10 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use unidb_core::{
-    ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo, QueryResult, SqlDialect,
-    TableColumnInfo, TransferFormat, UniDbError, coerce_value, generate_fake_rows,
+    ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo, QueryResult, ResultDiff, SqlDialect,
+    TableColumnInfo, TransferFormat, UniDbError, coerce_value, diff_results, generate_fake_rows,
     insert_statements, insertable_columns, mask_rows, parse_import, rows_to_csv, rows_to_json,
+    valid_identifier,
 };
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
@@ -27,6 +28,7 @@ use unidb_engine::{
 };
 use unidb_store::{
     AuditEntry, HistoryEntry, KeyringKeyProvider, MasterKeyProvider, SavedQuery, Store,
+    TableSnapshot,
 };
 
 use crate::bridge::{Bridge, QueryEvent};
@@ -487,6 +489,210 @@ impl AppService {
             report.applied.push(file.name);
         }
         Ok(report)
+    }
+
+    /// Captures a point in time snapshot of a table, capped at 500 rows.
+    pub async fn create_snapshot(
+        &self,
+        connection_id: Uuid,
+        database: &str,
+        table: &str,
+        note: Option<String>,
+    ) -> Result<TableSnapshot, UniDbError> {
+        let profile = self
+            .require_store()?
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "connection_not_found",
+                    ErrorCategory::ConnectionLost,
+                    "The connection profile could not be loaded",
+                )
+            })?;
+        let dialect = SqlDialect::for_engine(profile.engine).ok_or_else(|| {
+            UniDbError::new(
+                "snapshot_unsupported",
+                ErrorCategory::Unsupported,
+                "Snapshots are not available for this engine",
+            )
+        })?;
+        if !valid_identifier(table) {
+            return Err(UniDbError::new(
+                "snapshot_invalid_table",
+                ErrorCategory::Syntax,
+                format!("Invalid table name {table}"),
+            ));
+        }
+        let sql = format!("SELECT * FROM {} LIMIT 500", dialect.quote(table));
+        let result = self.execute(connection_id, &sql).await?;
+        let snapshot =
+            TableSnapshot::from_query_result(connection_id, database, table, note, &result)
+                .map_err(|error| {
+                    UniDbError::internal("Could not encode snapshot data").with_source(error)
+                })?;
+        self.require_store()?.save_snapshot(&snapshot).await?;
+        self.audit_transfer(
+            "snapshot_created",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "table": table,
+                "database": database,
+                "rows": snapshot.row_count,
+            }),
+        )
+        .await?;
+        Ok(snapshot)
+    }
+
+    /// Lists snapshots for one connection, newest first.
+    pub async fn list_snapshots(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<Vec<TableSnapshot>, UniDbError> {
+        self.require_store()?.list_snapshots(connection_id).await
+    }
+
+    /// Fetches one snapshot by id.
+    pub async fn get_snapshot(&self, id: Uuid) -> Result<Option<TableSnapshot>, UniDbError> {
+        self.require_store()?.get_snapshot(id).await
+    }
+
+    /// Deletes one snapshot by id.
+    pub async fn delete_snapshot(&self, id: Uuid) -> Result<bool, UniDbError> {
+        self.require_store()?.delete_snapshot(id).await
+    }
+
+    /// Compares a stored table snapshot against the live table state.
+    pub async fn diff_snapshot(
+        &self,
+        connection_id: Uuid,
+        snapshot_id: Uuid,
+    ) -> Result<ResultDiff, UniDbError> {
+        let snapshot = self
+            .require_store()?
+            .get_snapshot(snapshot_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "snapshot_not_found",
+                    ErrorCategory::Internal,
+                    "The snapshot could not be found",
+                )
+            })?;
+        let baseline = snapshot.to_query_result().map_err(|error| {
+            UniDbError::internal("Could not decode snapshot data").with_source(error)
+        })?;
+        let profile = self
+            .require_store()?
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "connection_not_found",
+                    ErrorCategory::ConnectionLost,
+                    "The connection profile could not be loaded",
+                )
+            })?;
+        let dialect = SqlDialect::for_engine(profile.engine).ok_or_else(|| {
+            UniDbError::new(
+                "snapshot_unsupported",
+                ErrorCategory::Unsupported,
+                "Snapshots are not available for this engine",
+            )
+        })?;
+        let sql = format!(
+            "SELECT * FROM {} LIMIT 500",
+            dialect.quote(&snapshot.table_name)
+        );
+        let current = self.execute(connection_id, &sql).await?;
+        let key_index = baseline
+            .columns
+            .iter()
+            .position(|col| col.name.eq_ignore_ascii_case("id"))
+            .unwrap_or(0);
+        let diff = diff_results(&baseline, &current, key_index, 100);
+        Ok(diff)
+    }
+
+    /// Restores a table from a snapshot transactionally.
+    pub async fn restore_snapshot(
+        &self,
+        connection_id: Uuid,
+        snapshot_id: Uuid,
+    ) -> Result<usize, UniDbError> {
+        let snapshot = self
+            .require_store()?
+            .get_snapshot(snapshot_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "snapshot_not_found",
+                    ErrorCategory::Internal,
+                    "The snapshot could not be found",
+                )
+            })?;
+        let result = snapshot.to_query_result().map_err(|error| {
+            UniDbError::internal("Could not decode snapshot data").with_source(error)
+        })?;
+        let profile = self
+            .require_store()?
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "connection_not_found",
+                    ErrorCategory::ConnectionLost,
+                    "The connection profile could not be loaded",
+                )
+            })?;
+        let dialect = SqlDialect::for_engine(profile.engine).ok_or_else(|| {
+            UniDbError::new(
+                "snapshot_unsupported",
+                ErrorCategory::Unsupported,
+                "Snapshots are not available for this engine",
+            )
+        })?;
+        if !valid_identifier(&snapshot.table_name) {
+            return Err(UniDbError::new(
+                "snapshot_invalid_table",
+                ErrorCategory::Syntax,
+                format!("Invalid table name {}", snapshot.table_name),
+            ));
+        }
+
+        let mut statements = vec![format!(
+            "DELETE FROM {}",
+            dialect.quote(&snapshot.table_name)
+        )];
+        if !result.rows.is_empty() && !result.columns.is_empty() {
+            let column_names: Vec<String> = result.columns.iter().map(|c| c.name.clone()).collect();
+            let inserts = insert_statements(
+                dialect,
+                &snapshot.table_name,
+                &column_names,
+                &result.rows,
+                200,
+            )?;
+            statements.extend(inserts);
+        }
+
+        self.apply_statements(connection_id, &statements).await?;
+
+        self.audit_transfer(
+            "snapshot_restored",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "table": snapshot.table_name,
+                "database": snapshot.database_name,
+                "rows": snapshot.row_count,
+            }),
+        )
+        .await?;
+
+        Ok(snapshot.row_count)
     }
 
     /// Generates deterministic fake rows and inserts them into a table.

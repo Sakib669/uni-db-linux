@@ -619,3 +619,144 @@ async fn migrations_apply_once_and_track_the_ledger() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn table_snapshots_capture_diff_and_restore() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    let db_path = dir.path().join("target.db");
+    let profile = ConnectionProfile::new(
+        "Target",
+        Engine::SQLite,
+        "",
+        db_path.to_str().expect("path"),
+    );
+    service
+        .save_connection(&profile, None)
+        .await
+        .expect("save connection");
+    service
+        .open_connection(&profile)
+        .await
+        .expect("open connection");
+
+    service
+        .execute(
+            profile.id,
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER);",
+        )
+        .await
+        .expect("create table");
+    service
+        .execute(
+            profile.id,
+            "INSERT INTO items (id, name, qty) VALUES (1, 'hammer', 5), (2, 'wrench', 10);",
+        )
+        .await
+        .expect("insert rows");
+
+    let snapshot = service
+        .create_snapshot(
+            profile.id,
+            "main",
+            "items",
+            Some("pre-update baseline".to_string()),
+        )
+        .await
+        .expect("create snapshot");
+    assert_eq!(snapshot.table_name, "items");
+    assert_eq!(snapshot.row_count, 2);
+    assert_eq!(snapshot.note.as_deref(), Some("pre-update baseline"));
+
+    let list = service
+        .list_snapshots(profile.id)
+        .await
+        .expect("list snapshots");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, snapshot.id);
+
+    let fetched = service
+        .get_snapshot(snapshot.id)
+        .await
+        .expect("get snapshot")
+        .expect("found");
+    assert_eq!(fetched.id, snapshot.id);
+
+    let diff_baseline = service
+        .diff_snapshot(profile.id, snapshot.id)
+        .await
+        .expect("diff against unchanged");
+    assert!(!diff_baseline.has_changes());
+    assert_eq!(diff_baseline.unchanged, 2);
+
+    service
+        .execute(profile.id, "UPDATE items SET qty = 99 WHERE id = 1;")
+        .await
+        .expect("update row");
+    service
+        .execute(
+            profile.id,
+            "INSERT INTO items (id, name, qty) VALUES (3, 'saw', 2);",
+        )
+        .await
+        .expect("insert new row");
+
+    let diff_modified = service
+        .diff_snapshot(profile.id, snapshot.id)
+        .await
+        .expect("diff against modified");
+    assert!(diff_modified.has_changes());
+    assert_eq!(diff_modified.changed, 1);
+    assert_eq!(diff_modified.added, 1);
+
+    let restored_count = service
+        .restore_snapshot(profile.id, snapshot.id)
+        .await
+        .expect("restore snapshot");
+    assert_eq!(restored_count, 2);
+
+    let check = service
+        .execute(profile.id, "SELECT id, name, qty FROM items ORDER BY id;")
+        .await
+        .expect("query restored rows");
+    assert_eq!(check.rows.len(), 2);
+    assert_eq!(check.rows[0][0], unidb_core::Value::Int(1));
+    assert_eq!(
+        check.rows[0][1],
+        unidb_core::Value::Text("hammer".to_string())
+    );
+    assert_eq!(check.rows[0][2], unidb_core::Value::Int(5));
+    assert_eq!(check.rows[1][0], unidb_core::Value::Int(2));
+    assert_eq!(
+        check.rows[1][1],
+        unidb_core::Value::Text("wrench".to_string())
+    );
+    assert_eq!(check.rows[1][2], unidb_core::Value::Int(10));
+
+    let audit = service.recent_audit(20).await.expect("audit");
+    assert!(audit.iter().any(|entry| entry.action == "snapshot_created"));
+    assert!(
+        audit
+            .iter()
+            .any(|entry| entry.action == "snapshot_restored")
+    );
+
+    assert!(
+        service
+            .delete_snapshot(snapshot.id)
+            .await
+            .expect("delete snapshot")
+    );
+    assert!(
+        service
+            .list_snapshots(profile.id)
+            .await
+            .expect("list after delete")
+            .is_empty()
+    );
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
