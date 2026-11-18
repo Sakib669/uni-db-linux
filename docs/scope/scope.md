@@ -245,7 +245,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 
 - [x] Workspace lint and format gates: `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`
 - [x] Automated test suite (`unidb-core`, `unidb-store`, `unidb-engine` including Postgres, MySQL, MariaDB, Redis, MongoDB containers, and `unidb-app`)
-- [x] CycloneDX SBOM generation (`scripts/generate-sbom.sh`, 502 components) and Debian `.deb` packaging verification (`scripts/package-deb.sh`)
+- [x] CycloneDX SBOM generation (`scripts/generate-sbom.sh`, 538 components) and Debian `.deb` packaging verification (`scripts/package-deb.sh`)
 - [x] Security and safety verification: `unsafe_code = "forbid"`, keyring AES-256-GCM secret isolation, SQL audit redaction, 500 row UI render cap
 
 ## Deferred follow ups

@@ -1,10 +1,10 @@
 UniDB 0.1.0 .deb verification
-date: 2026-11-18T14:01:12Z
+date: 2026-11-18T14:24:11Z
 package: unidb_0.1.0_amd64.deb
 
 == dpkg-deb -I ==
  new Debian package, version 2.0.
- size 8358348 bytes: control archive=712 bytes.
+ size 9131244 bytes: control archive=708 bytes.
      738 bytes,    17 lines      control
  Package: unidb
  Version: 0.1.0
@@ -12,7 +12,7 @@ package: unidb_0.1.0_amd64.deb
  Priority: optional
  Architecture: amd64
  Maintainer: Sakib669 <stewieboyyy@gmail.com>
- Installed-Size: 36632
+ Installed-Size: 40772
  Depends: libc6, libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5), libgtksourceview-5-0, libglib2.0-0
  Recommends: xdg-utils
  Homepage: https://github.com/Sakib669/uni-db-linux
@@ -25,42 +25,42 @@ package: unidb_0.1.0_amd64.deb
   and offline first sync.
 
 == dpkg-deb -c ==
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/bin/
--rwxr-xr-x root/root  37496928 2026-11-18 20:00 ./usr/bin/unidb
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/share/
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/share/applications/
--rw-r--r-- root/root       358 2026-11-18 20:00 ./usr/share/applications/io.github.sakib669.UniDB.desktop
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/share/icons/
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/share/icons/hicolor/
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/share/icons/hicolor/scalable/
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/share/icons/hicolor/scalable/apps/
--rw-r--r-- root/root       844 2026-11-18 20:00 ./usr/share/icons/hicolor/scalable/apps/io.github.sakib669.UniDB.svg
-drwxrwxr-x root/root         0 2026-11-18 20:00 ./usr/share/metainfo/
--rw-r--r-- root/root      1757 2026-11-18 20:00 ./usr/share/metainfo/io.github.sakib669.UniDB.metainfo.xml
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/bin/
+-rwxr-xr-x root/root  41741744 2026-11-18 20:23 ./usr/bin/unidb
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/share/
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/share/applications/
+-rw-r--r-- root/root       358 2026-11-18 20:23 ./usr/share/applications/io.github.sakib669.UniDB.desktop
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/share/icons/
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/share/icons/hicolor/
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/share/icons/hicolor/scalable/
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/share/icons/hicolor/scalable/apps/
+-rw-r--r-- root/root       844 2026-11-18 20:23 ./usr/share/icons/hicolor/scalable/apps/io.github.sakib669.UniDB.svg
+drwxrwxr-x root/root         0 2026-11-18 20:23 ./usr/share/metainfo/
+-rw-r--r-- root/root      1757 2026-11-18 20:23 ./usr/share/metainfo/io.github.sakib669.UniDB.metainfo.xml
 
 == extracted binary ==
 unidb 0.1.0
 
 == shared libraries ==
-	linux-vdso.so.1 (0x0000710877965000)
-	libgtksourceview-5.so.0 => /lib/x86_64-linux-gnu/libgtksourceview-5.so.0 (0x0000710875d09000)
-	libgtk-4.so.1 => /lib/x86_64-linux-gnu/libgtk-4.so.1 (0x00007108751c1000)
-	libcairo.so.2 => /lib/x86_64-linux-gnu/libcairo.so.2 (0x000071087507d000)
-	libgio-2.0.so.0 => /lib/x86_64-linux-gnu/libgio-2.0.so.0 (0x0000710874ead000)
-	libgobject-2.0.so.0 => /lib/x86_64-linux-gnu/libgobject-2.0.so.0 (0x00007108778f5000)
-	libglib-2.0.so.0 => /lib/x86_64-linux-gnu/libglib-2.0.so.0 (0x0000710874d64000)
-	libadwaita-1.so.0 => /lib/x86_64-linux-gnu/libadwaita-1.so.0 (0x0000710874b26000)
-	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007108778c5000)
-	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x0000710874a3d000)
-	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x000071087482a000)
-	/lib64/ld-linux-x86-64.so.2 (0x0000710877967000)
-	libfribidi.so.0 => /lib/x86_64-linux-gnu/libfribidi.so.0 (0x00007108778a7000)
-	libpangocairo-1.0.so.0 => /lib/x86_64-linux-gnu/libpangocairo-1.0.so.0 (0x0000710877894000)
-	libpango-1.0.so.0 => /lib/x86_64-linux-gnu/libpango-1.0.so.0 (0x00007108747bf000)
-	libgdk_pixbuf-2.0.so.0 => /lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so.0 (0x0000710877866000)
-	libxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x00007108745dd000)
-	libpangoft2-1.0.so.0 => /lib/x86_64-linux-gnu/libpangoft2-1.0.so.0 (0x00007108745c2000)
-	libfontconfig.so.1 => /lib/x86_64-linux-gnu/libfontconfig.so.1 (0x0000710874571000)
-	libpcre2-8.so.0 => /lib/x86_64-linux-gnu/libpcre2-8.so.0 (0x00007108744d7000)
+	linux-vdso.so.1 (0x00007eb50340b000)
+	libgtksourceview-5.so.0 => /lib/x86_64-linux-gnu/libgtksourceview-5.so.0 (0x00007eb501509000)
+	libgtk-4.so.1 => /lib/x86_64-linux-gnu/libgtk-4.so.1 (0x00007eb5009c1000)
+	libcairo.so.2 => /lib/x86_64-linux-gnu/libcairo.so.2 (0x00007eb50087d000)
+	libgio-2.0.so.0 => /lib/x86_64-linux-gnu/libgio-2.0.so.0 (0x00007eb5006ad000)
+	libgobject-2.0.so.0 => /lib/x86_64-linux-gnu/libgobject-2.0.so.0 (0x00007eb50339b000)
+	libglib-2.0.so.0 => /lib/x86_64-linux-gnu/libglib-2.0.so.0 (0x00007eb500564000)
+	libadwaita-1.so.0 => /lib/x86_64-linux-gnu/libadwaita-1.so.0 (0x00007eb500326000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007eb50336b000)
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007eb50023d000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007eb50002a000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007eb50340d000)
+	libfribidi.so.0 => /lib/x86_64-linux-gnu/libfribidi.so.0 (0x00007eb50000c000)
+	libpangocairo-1.0.so.0 => /lib/x86_64-linux-gnu/libpangocairo-1.0.so.0 (0x00007eb4ffffb000)
+	libpango-1.0.so.0 => /lib/x86_64-linux-gnu/libpango-1.0.so.0 (0x00007eb4fff90000)
+	libgdk_pixbuf-2.0.so.0 => /lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so.0 (0x00007eb4fff62000)
+	libxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x00007eb4ffd80000)
+	libpangoft2-1.0.so.0 => /lib/x86_64-linux-gnu/libpangoft2-1.0.so.0 (0x00007eb4ffd65000)
+	libfontconfig.so.1 => /lib/x86_64-linux-gnu/libfontconfig.so.1 (0x00007eb4ffd14000)
+	libpcre2-8.so.0 => /lib/x86_64-linux-gnu/libpcre2-8.so.0 (0x00007eb4ffc7a000)
