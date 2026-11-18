@@ -2,6 +2,31 @@
 
 UniDB is a database client, so local database servers (except SQLite, which reads `.db` files directly) must be running and listening on their port before clicking **Test** or **Connect**.
 
+## All 9 Engines Quick Reference
+
+| Engine | Default Port | Start | Stop | Stop Boot Auto Start |
+| :--- | :--- | :--- | :--- | :--- |
+| **PostgreSQL** | `5432` | `sudo systemctl start postgresql` | `sudo systemctl stop postgresql` | `sudo systemctl disable postgresql` |
+| **MySQL** | `3306` | `sudo systemctl start mysql` | `sudo systemctl stop mysql` | `sudo systemctl disable mysql` |
+| **MariaDB** | `3306` | `sudo systemctl start mariadb` | `sudo systemctl stop mariadb` | `sudo systemctl disable mariadb` |
+| **Redis** (apt) | `6379` | `sudo systemctl start redis-server` | `sudo systemctl stop redis-server` | `sudo systemctl disable redis-server` |
+| **Redis** (user bin) | `6379` | `redis-server --daemonize yes` | `redis-cli shutdown` | *Not auto started* |
+| **MongoDB** | `27017` | `sudo systemctl start mongod` | `sudo systemctl stop mongod` | `sudo systemctl disable mongod` |
+| **CockroachDB** | `26257` | `cockroach start-single-node --insecure --listen-addr=127.0.0.1:26257 --http-addr=127.0.0.1:8080 --background` | `cockroach quit --insecure --host=127.0.0.1:26257` | `sudo systemctl disable cockroachdb` |
+| **Cassandra** | `9042` | `sudo systemctl start cassandra` | `sudo systemctl stop cassandra` | `sudo systemctl disable cassandra` |
+| **MSSQL** | `1433` | `sudo systemctl start mssql-server` | `sudo systemctl stop mssql-server` | `sudo systemctl disable mssql-server` |
+| **SQLite** | File path | *No server required* | *No server required* | *N/A* |
+
+## One line Start / Stop for PostgreSQL + Redis + MongoDB
+
+```bash
+# Start all three
+sudo systemctl start postgresql mongod && redis-server --daemonize yes
+
+# Stop all three
+redis-cli shutdown; sudo systemctl stop mongod postgresql
+```
+
 ## Quick port check
 
 Check which database ports are currently listening on your machine:
