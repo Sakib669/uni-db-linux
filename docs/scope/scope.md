@@ -225,9 +225,30 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - [x] Time travel and archive: point in time table snapshots in SQLite store, keyed diff comparison, transactional restore, audit logging, and History page UI verified with container screenshots in docs/evidence/
   - [x] Masking of exports: text and email masking, masked CSV and JSON entries in the editor Export menu, service path with audit, and headless tests
   - [x] Multi database query and team bundles: concurrent cross connection query runner with merged `_connection` column and per target summaries, signed JSON team bundles with detached `.sig` verification dialog and zero secrets, verified with container screenshots in docs/evidence/
-- [ ] Verify it: /check verify Workflow features
-- [ ] Test it: /test Workflow features
+- [x] Verify it: `cargo test --workspace --no-default-features` and container GUI verification screenshots in `docs/evidence/`
 
-## Deferred
+### 13. Platform features
 
-Features from the spec roadmap are enrolled here as their own scope features when their spec is written, in roadmap order: engine layer, app store and credential security, design system and shell, connection manager, SQL editor and grid, table designer, import and export, history and saved queries, packaging and updates, visual features, workflow features, platform features.
+**Intent**: Complete the desktop database platform with offline first sync, deterministic SQL schema diagnostics, lightweight scheduled jobs, and a pure Rust sandboxed WASM plugin runtime (`unsafe_code = "forbid"`).
+
+**Done when**: a user inspects schema health and gets SQL fixes, schedules and runs recurring SQL jobs, installs and invokes sandboxed WASM plugins, and queues/flushes offline mutations with optimistic conflict checks.
+
+- [x] Decide the platform features (specs): [0020](../specs/0020-ai-schema-doctor.md), [0021](../specs/0021-scheduled-jobs.md), [0022](../specs/0022-wasm-plugin-runtime.md), [0023](../specs/0023-offline-first-sync.md)
+- [x] Build it: Platform module and shell integration
+  - [x] AI Schema Doctor: pure Rust `diagnose_schema`, live connection introspection, health score, remediation SQL, audit logging, and Platform tab (`platform-doctor.png`)
+  - [x] Scheduled Jobs: `0004_scheduled_jobs.sql`, store CRUD, `run_job_now` / `run_due_jobs`, audit logging, and Platform tab (`platform-jobs.png`)
+  - [x] WASM Plugin Runtime: pure Rust fuel metered stack VM (`unidb-core::plugin`), `0006_wasm_plugins.sql`, sample plugin install/execute, audit logging, and Platform tab (`platform-plugins.png`)
+  - [x] Offline First Sync: `0005_sync_queue.sql`, conflict guard checks, transactional flush, audit logging, and Platform tab (`platform-sync.png`)
+- [x] Verify it: unit tests (`unidb-core`), store round trip (`unidb-store`), integration tests (`unidb-app`), and container GUI screenshots in `docs/evidence/`
+
+## Verification and packaging checks
+
+- [x] Workspace lint and format gates: `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`
+- [x] Automated test suite (`unidb-core`, `unidb-store`, `unidb-engine` including Postgres, MySQL, MariaDB, Redis, MongoDB containers, and `unidb-app`)
+- [x] CycloneDX SBOM generation (`scripts/generate-sbom.sh`, 502 components) and Debian `.deb` packaging verification (`scripts/package-deb.sh`)
+- [x] Security and safety verification: `unsafe_code = "forbid"`, keyring AES-256-GCM secret isolation, SQL audit redaction, 500 row UI render cap
+
+## Deferred follow ups
+
+Future roadmap enhancements beyond v0.1.0: arm64 native packaging, Flathub submission, in app auto update download, interactive drag/zoom ERD canvas, and saved chart dashboards.
+
