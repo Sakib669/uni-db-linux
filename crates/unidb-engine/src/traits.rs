@@ -8,8 +8,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use unidb_core::{
-    Capabilities, ConnectionProfile, Engine, ErrorCategory, QueryResult, TableColumnInfo,
-    UniDbError,
+    Capabilities, ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo, QueryResult,
+    TableColumnInfo, UniDbError,
 };
 
 #[async_trait]
@@ -64,6 +64,19 @@ pub trait Session: Send {
             "schema_unsupported",
             ErrorCategory::Unsupported,
             "This engine does not support browsing yet",
+        ))
+    }
+
+    /// Foreign keys declared on a table, for the ERD and relationship views.
+    async fn list_foreign_keys(
+        &mut self,
+        _database: &str,
+        _table: &str,
+    ) -> Result<Vec<ForeignKeyInfo>, UniDbError> {
+        Err(UniDbError::new(
+            "foreign_keys_unsupported",
+            ErrorCategory::Unsupported,
+            "Relationships are not available for this engine",
         ))
     }
 

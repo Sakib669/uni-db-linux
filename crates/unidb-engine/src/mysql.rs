@@ -299,6 +299,48 @@ impl Session for MySqlSession {
         }
         Ok(columns)
     }
+
+    async fn list_foreign_keys(
+        &mut self,
+        database: &str,
+        table: &str,
+    ) -> Result<Vec<unidb_core::ForeignKeyInfo>, UniDbError> {
+        let (schema, table) = match table.split_once('.') {
+            Some((schema, table)) => (schema.to_string(), table.to_string()),
+            None => (database.to_string(), table.to_string()),
+        };
+        let rows = sqlx::query(
+            "SELECT column_name, referenced_table_name, referenced_column_name
+             FROM information_schema.key_column_usage
+             WHERE table_schema = ? AND table_name = ?
+               AND referenced_table_name IS NOT NULL",
+        )
+        .bind(&schema)
+        .bind(&table)
+        .fetch_all(&mut *self.connection)
+        .await
+        .map_err(|error| {
+            driver_error(
+                "schema_query_failed",
+                "Could not read the foreign keys",
+                error,
+            )
+        })?;
+        let mut keys = Vec::new();
+        for row in rows {
+            use sqlx::Row;
+            let from_column: String = row.try_get(0).unwrap_or_default();
+            let to_table: String = row.try_get(1).unwrap_or_default();
+            let to_column: String = row.try_get(2).unwrap_or_default();
+            keys.push(unidb_core::ForeignKeyInfo {
+                from_table: table.clone(),
+                from_column,
+                to_table,
+                to_column,
+            });
+        }
+        Ok(keys)
+    }
 }
 
 fn map_rows(rows: &[MySqlRow], elapsed_ms: u128) -> QueryResult {

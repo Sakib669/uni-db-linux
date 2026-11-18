@@ -224,6 +224,35 @@ impl Session for SqliteSession {
         }
         Ok(columns)
     }
+
+    async fn list_foreign_keys(
+        &mut self,
+        _database: &str,
+        table: &str,
+    ) -> Result<Vec<unidb_core::ForeignKeyInfo>, UniDbError> {
+        let quoted = table.replace('"', "\"\"");
+        let statement = sqlx::AssertSqlSafe(format!("PRAGMA foreign_key_list(\"{quoted}\")"));
+        let rows = sqlx::query(statement)
+            .fetch_all(&mut *self.connection)
+            .await
+            .map_err(|error| sqlite_error("Could not read the SQLite foreign keys", error))?;
+        let mut keys = Vec::new();
+        for row in rows {
+            use sqlx::Row;
+            let to_table: String = row
+                .try_get("table")
+                .map_err(|error| sqlite_error("Could not read a foreign key target", error))?;
+            let from_column: Option<String> = row.try_get("from").unwrap_or(None);
+            let to_column: Option<String> = row.try_get("to").unwrap_or(None);
+            keys.push(unidb_core::ForeignKeyInfo {
+                from_table: table.to_string(),
+                from_column: from_column.unwrap_or_default(),
+                to_table,
+                to_column: to_column.unwrap_or_default(),
+            });
+        }
+        Ok(keys)
+    }
 }
 
 impl SqliteSession {

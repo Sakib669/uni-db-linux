@@ -312,6 +312,57 @@ impl Session for PostgresSession {
         }
         Ok(columns)
     }
+
+    async fn list_foreign_keys(
+        &mut self,
+        _database: &str,
+        table: &str,
+    ) -> Result<Vec<unidb_core::ForeignKeyInfo>, UniDbError> {
+        let (schema, table) = match table.split_once('.') {
+            Some((schema, table)) => (schema.to_string(), table.to_string()),
+            None => ("public".to_string(), table.to_string()),
+        };
+        let rows = sqlx::query(
+            "SELECT kcu.column_name::text AS from_column,
+                    ccu.table_name::text AS to_table,
+                    ccu.column_name::text AS to_column
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+               ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+             JOIN information_schema.constraint_column_usage ccu
+               ON ccu.constraint_name = tc.constraint_name
+              AND ccu.table_schema = tc.table_schema
+             WHERE tc.constraint_type = 'FOREIGN KEY'
+               AND tc.table_schema = $1
+               AND tc.table_name = $2",
+        )
+        .bind(&schema)
+        .bind(&table)
+        .fetch_all(&mut *self.connection)
+        .await
+        .map_err(|error| {
+            driver_error(
+                "schema_query_failed",
+                "Could not read the foreign keys",
+                error,
+            )
+        })?;
+        let mut keys = Vec::new();
+        for row in rows {
+            use sqlx::Row;
+            let from_column: String = row.try_get("from_column").unwrap_or_default();
+            let to_table: String = row.try_get("to_table").unwrap_or_default();
+            let to_column: String = row.try_get("to_column").unwrap_or_default();
+            keys.push(unidb_core::ForeignKeyInfo {
+                from_table: table.clone(),
+                from_column,
+                to_table,
+                to_column,
+            });
+        }
+        Ok(keys)
+    }
 }
 
 fn map_rows(rows: &[PgRow], elapsed_ms: u128) -> QueryResult {
