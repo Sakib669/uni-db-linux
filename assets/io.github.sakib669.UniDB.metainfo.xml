@@ -6,27 +6,26 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <description>
-    <p>UniDB is a native database studio for Linux built with GTK4 and libadwaita.</p>
+    <p>UniDB is a fast, native desktop database studio for Linux built with Rust, GTK4, and libadwaita with encrypted local credential storage and strict safety controls.</p>
     <ul>
       <li>Connect to SQLite, PostgreSQL, CockroachDB, MySQL, MariaDB, Redis, MongoDB, Cassandra, and MSSQL.</li>
-      <li>Browse databases and tables with lazy loading.</li>
-      <li>Write and run SQL in a syntax highlighted editor with a result grid.</li>
-      <li>Design tables with a DDL preview and transactional apply.</li>
-      <li>Import and export CSV and JSON with reports.</li>
-      <li>Search history, save queries, and choose a light or dark theme.</li>
+      <li>Browse schemas and tables, inspect foreign key ERDs, and run explain plans or bar charts.</li>
+      <li>Write and run SQL in GtkSourceView or generate queries visually with the Query Builder.</li>
+      <li>Design tables, run numbered SQL migrations, snapshot and compare table state, and share signed team bundles.</li>
+      <li>Run offline Schema Doctor checks, scheduled jobs, sandboxed WASM plugins, and offline first sync queues.</li>
     </ul>
   </description>
   <launchable type="desktop-id">io.github.sakib669.UniDB.desktop</launchable>
   <url type="homepage">https://github.com/Sakib669/uni-db-linux</url>
   <url type="bugtracker">https://github.com/Sakib669/uni-db-linux/issues</url>
   <developer id="io.github.sakib669">
-    <name>Sakib</name>
+    <name>Sakib669</name>
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
-    <release version="0.1.0" date="2026-11-17">
+    <release version="0.1.0" date="2026-11-18">
       <description>
-        <p>First packaged build with the shell, connections, navigator, editor, table designer, transfer, and history.</p>
+        <p>Initial v0.1.0 release with all 9 database engines, SQL editor, ERD schema map, migrations, snapshots, signed team bundles, schema doctor, scheduled jobs, WASM plugins, and offline sync.</p>
       </description>
     </release>
   </releases>

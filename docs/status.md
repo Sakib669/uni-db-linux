@@ -24,7 +24,7 @@ Updated 2026-11-18 after completing the Platform features and verification pass.
 
 ## Current gates
 
-- `cargo test --workspace --no-default-features`: 136 tests passing (0 failed; 3 large image tests ignored by default).
+- `cargo test --workspace --no-default-features -- --include-ignored`: 139 tests passing (0 failed across all 9 live database engines).
 - `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
 - GUI build and container screenshots current across all surfaces including Platform (`platform-doctor.png`, `platform-jobs.png`, `platform-plugins.png`, `platform-sync.png`).

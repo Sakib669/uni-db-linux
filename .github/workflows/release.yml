@@ -48,12 +48,12 @@ jobs:
 
       - name: Checksums
         run: |
+          cp target/release/unidb_*.deb target/
           cd target
           sha256sum unidb_*.deb sbom.cdx.json > SHA256SUMS
           cat SHA256SUMS
 
       - name: Sign artifacts
-        if: ${{ env.RELEASE_GPG_PRIVATE_KEY != '' }}
         env:
           RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
         run: |
@@ -70,14 +70,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            target/unidb_*.deb \
-            target/sbom.cdx.json \
-            target/SHA256SUMS \
-            target/*.asc 2>/dev/null || \
-          gh release create "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            target/unidb_*.deb \
-            target/sbom.cdx.json \
-            target/SHA256SUMS
+          shopt -s nullglob
+          ASSETS=(target/unidb_*.deb target/sbom.cdx.json target/SHA256SUMS target/*.asc)
+          gh release create "${GITHUB_REF_NAME}" --generate-notes "${ASSETS[@]}"

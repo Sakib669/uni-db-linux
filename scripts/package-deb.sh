@@ -41,16 +41,18 @@ Version: $VERSION
 Section: database
 Priority: optional
 Architecture: amd64
-Maintainer: Sakib <sakib@example.com>
+Maintainer: Sakib669 <stewieboyyy@gmail.com>
 Installed-Size: $INSTALLED_SIZE
 Depends: libc6, libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5), libgtksourceview-5-0, libglib2.0-0
 Recommends: xdg-utils
 Homepage: https://github.com/Sakib669/uni-db-linux
 Description: Native database studio for Linux
- UniDB is a GTK4 database studio for SQLite, PostgreSQL, CockroachDB,
- MySQL, MariaDB, Redis, MongoDB, Cassandra, and MSSQL. It includes a
- navigator, a SQL editor with results, a table designer, CSV and JSON
- transfer, history, saved queries, and a security report.
+ UniDB is a GTK4 and libadwaita database studio for SQLite, PostgreSQL,
+ CockroachDB, MySQL, MariaDB, Redis, MongoDB, Cassandra, and MSSQL.
+ It includes a SQL editor, navigator, ERD schema map, visual query
+ builder, table designer, CSV/JSON transfer, migrations, snapshots,
+ signed team bundles, schema doctor, scheduled jobs, WASM plugins,
+ and offline first sync.
 CONTROL
 
 DEB="$ROOT/target/release/unidb_${VERSION}_amd64.deb"
