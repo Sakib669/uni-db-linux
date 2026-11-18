@@ -255,6 +255,8 @@ enum AppMsg {
     TransferFailed(String),
     ExportQuery(TransferFormat),
     ExportReady(Uuid, TransferFormat, std::path::PathBuf, String),
+    ExportQueryMasked(TransferFormat),
+    ExportReadyMasked(Uuid, TransferFormat, std::path::PathBuf, String),
     LoadHistory,
     HistoryLoaded(Box<Vec<HistoryEntry>>),
     SavedQueriesLoaded(Box<Vec<SavedQuery>>),
@@ -355,6 +357,8 @@ impl std::fmt::Debug for AppMsg {
             Self::TransferFailed(_) => "TransferFailed",
             Self::ExportQuery(_) => "ExportQuery",
             Self::ExportReady(_, _, _, _) => "ExportReady",
+            Self::ExportQueryMasked(_) => "ExportQueryMasked",
+            Self::ExportReadyMasked(_, _, _, _) => "ExportReadyMasked",
             Self::LoadHistory => "LoadHistory",
             Self::HistoryLoaded(_) => "HistoryLoaded",
             Self::SavedQueriesLoaded(_) => "SavedQueriesLoaded",
@@ -1462,6 +1466,65 @@ impl SimpleComponent for AppModel {
                         ));
                     },
                 );
+            }
+            AppMsg::ExportQueryMasked(format) => {
+                let Some(connection_id) = self.editor_connection else {
+                    self.show_toast("Choose a live connection first.");
+                    return;
+                };
+                let buffer = self.editor_view.buffer();
+                let sql = buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .to_string();
+                if sql.trim().is_empty() {
+                    self.show_toast("Write a statement first.");
+                    return;
+                }
+                let dialog = gtk::FileDialog::builder()
+                    .title("Export masked result")
+                    .initial_name(match format {
+                        TransferFormat::Csv => "result-masked.csv",
+                        TransferFormat::Json => "result-masked.json",
+                    })
+                    .build();
+                let sender = sender.clone();
+                dialog.save(
+                    relm4::main_application().active_window().as_ref(),
+                    None::<&gtk::gio::Cancellable>,
+                    move |result| {
+                        let Ok(file) = result else { return };
+                        let Some(path) = file.path() else { return };
+                        sender.input(AppMsg::ExportReadyMasked(
+                            connection_id,
+                            format,
+                            path,
+                            sql.clone(),
+                        ));
+                    },
+                );
+            }
+            AppMsg::ExportReadyMasked(connection_id, format, path, sql) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service
+                        .export_query_masked(connection_id, &sql, format, &path)
+                        .await
+                    {
+                        Ok(report) => sender.input(AppMsg::Toast(format!(
+                            "Exported {} masked rows to {}",
+                            report.rows,
+                            report.path.display()
+                        ))),
+                        Err(error) => sender.input(AppMsg::Toast(format!(
+                            "Masked export failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
             }
             AppMsg::LoadHistory => self.load_history(&sender),
             AppMsg::HistoryLoaded(entries) => {
@@ -4038,6 +4101,21 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     }
     export_box.append(&export_csv_button);
     export_box.append(&export_json_button);
+    let export_csv_masked = gtk::Button::with_label("CSV masked");
+    {
+        let sender = sender.clone();
+        export_csv_masked
+            .connect_clicked(move |_| sender.input(AppMsg::ExportQueryMasked(TransferFormat::Csv)));
+    }
+    let export_json_masked = gtk::Button::with_label("JSON masked");
+    {
+        let sender = sender.clone();
+        export_json_masked.connect_clicked(move |_| {
+            sender.input(AppMsg::ExportQueryMasked(TransferFormat::Json))
+        });
+    }
+    export_box.append(&export_csv_masked);
+    export_box.append(&export_json_masked);
     export_popover.set_child(Some(&export_box));
     export_button.set_popover(Some(&export_popover));
     let editor_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
