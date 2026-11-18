@@ -4,7 +4,7 @@
 use crate::engine::Engine;
 use crate::error::{ErrorCategory, UniDbError};
 use crate::schema::ForeignKeyInfo;
-use crate::value::{Column, Value};
+use crate::value::{Column, QueryResult, Value};
 
 /// One bar in a chart.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +38,115 @@ pub fn explain_statement(engine: Engine, sql: &str) -> Result<String, UniDbError
         }
     };
     Ok(explain)
+}
+
+/// How one row differs between two results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffChange {
+    Added,
+    Removed,
+    Changed,
+}
+
+impl DiffChange {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Removed => "removed",
+            Self::Changed => "changed",
+        }
+    }
+}
+
+/// One changed row in a result diff.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffRow {
+    pub change: DiffChange,
+    pub key: String,
+    pub before: Vec<Value>,
+    pub after: Vec<Value>,
+}
+
+/// Summary of a comparison between a baseline result and a current result.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ResultDiff {
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
+    pub unchanged: usize,
+    pub details: Vec<DiffRow>,
+}
+
+impl ResultDiff {
+    pub fn has_changes(&self) -> bool {
+        self.added + self.removed + self.changed > 0
+    }
+}
+
+/// Compares two results by a key column. Rows are matched by the display text
+/// of the key column, and the first `max_details` differences are kept.
+pub fn diff_results(
+    baseline: &QueryResult,
+    current: &QueryResult,
+    key_index: usize,
+    max_details: usize,
+) -> ResultDiff {
+    let mut diff = ResultDiff::default();
+    let key = |row: &[Value]| {
+        row.get(key_index)
+            .or_else(|| row.first())
+            .map(Value::display_text)
+            .unwrap_or_default()
+    };
+    let mut current_by_key: Vec<(String, &Vec<Value>)> =
+        current.rows.iter().map(|row| (key(row), row)).collect();
+    for old in &baseline.rows {
+        let old_key = key(old);
+        match current_by_key
+            .iter()
+            .position(|(value, _)| *value == old_key)
+        {
+            Some(index) => {
+                let (_, new) = current_by_key.remove(index);
+                if new == old {
+                    diff.unchanged += 1;
+                } else {
+                    diff.changed += 1;
+                    if diff.details.len() < max_details {
+                        diff.details.push(DiffRow {
+                            change: DiffChange::Changed,
+                            key: old_key,
+                            before: old.clone(),
+                            after: new.clone(),
+                        });
+                    }
+                }
+            }
+            None => {
+                diff.removed += 1;
+                if diff.details.len() < max_details {
+                    diff.details.push(DiffRow {
+                        change: DiffChange::Removed,
+                        key: old_key,
+                        before: old.clone(),
+                        after: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+    for (new_key, new) in current_by_key {
+        diff.added += 1;
+        if diff.details.len() < max_details {
+            diff.details.push(DiffRow {
+                change: DiffChange::Added,
+                key: new_key,
+                before: Vec::new(),
+                after: new.clone(),
+            });
+        }
+    }
+    diff
 }
 
 /// A table in the ERD input.
@@ -389,5 +498,56 @@ mod tests {
         let layout = erd_layout(&tables, 800.0);
         assert_eq!(layout.boxes.len(), 1);
         assert!(layout.edges.is_empty());
+    }
+
+    #[test]
+    fn diff_finds_added_removed_and_changed_rows() {
+        let baseline = QueryResult {
+            columns: vec![Column {
+                name: "id".to_string(),
+                type_name: "INTEGER".to_string(),
+                nullable: false,
+            }],
+            rows: vec![
+                vec![Value::Int(1)],
+                vec![Value::Int(2)],
+                vec![Value::Int(3)],
+            ],
+            affected_rows: None,
+            elapsed_ms: 0,
+        };
+        let current = QueryResult {
+            columns: baseline.columns.clone(),
+            rows: vec![
+                vec![Value::Int(1)],
+                vec![Value::Int(2), Value::Text("changed".to_string())],
+                vec![Value::Int(4)],
+            ],
+            affected_rows: None,
+            elapsed_ms: 0,
+        };
+        let diff = diff_results(&baseline, &current, 0, 10);
+        assert_eq!(diff.unchanged, 1);
+        assert_eq!(diff.changed, 1);
+        assert_eq!(diff.removed, 1);
+        assert_eq!(diff.added, 1);
+        assert!(diff.has_changes());
+        assert_eq!(diff.details.len(), 3);
+    }
+
+    #[test]
+    fn diff_caps_details_and_handles_empty_results() {
+        let baseline = QueryResult {
+            columns: Vec::new(),
+            rows: vec![vec![Value::Int(1)], vec![Value::Int(2)]],
+            affected_rows: None,
+            elapsed_ms: 0,
+        };
+        let current = QueryResult::empty(1);
+        let diff = diff_results(&baseline, &current, 5, 1);
+        assert_eq!(diff.removed, 2);
+        assert_eq!(diff.details.len(), 1);
+        let same = diff_results(&QueryResult::empty(1), &QueryResult::empty(1), 0, 10);
+        assert!(!same.has_changes());
     }
 }

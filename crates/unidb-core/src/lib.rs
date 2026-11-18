@@ -22,6 +22,6 @@ pub use transfer::{
 };
 pub use value::{Column, QueryResult, Value};
 pub use visual::{
-    ChartPoint, ErdBox, ErdEdge, ErdLayout, ErdTable, chart_series, erd_layout, explain_statement,
-    numeric_type,
+    ChartPoint, DiffChange, DiffRow, ErdBox, ErdEdge, ErdLayout, ErdTable, ResultDiff,
+    chart_series, diff_results, erd_layout, explain_statement, numeric_type,
 };
