@@ -177,16 +177,31 @@ xdotool type --delay 20 "SELECT * FROM users;"
 sleep 0.3
 xdotool key ctrl+Return
 sleep 2
-xdotool mousemove $((X + 802)) $((Y + 78))
+xdotool mousemove $((X + 887)) $((Y + 78))
 sleep 0.3
 xdotool click 1
 sleep 1
 import -window root /app/target/editor-chart.png
-xdotool mousemove $((X + 711)) $((Y + 78))
+xdotool mousemove $((X + 804)) $((Y + 78))
 sleep 0.3
 xdotool click 1
 sleep 2
 import -window root /app/target/editor-explain.png
+
+# Capture a baseline, rerun the same query, and compare the two results.
+xdotool mousemove $((X + 976)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 1
+xdotool mousemove $((X + 500)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 2
+xdotool mousemove $((X + 976)) $((Y + 78))
+sleep 0.3
+xdotool click 1
+sleep 1
+import -window root /app/target/editor-compare.png
 
 # Schema page is the eighth sidebar row.
 xdotool mousemove $((X + 100)) $((Y + 354))
