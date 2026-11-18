@@ -17,7 +17,8 @@ use uuid::Uuid;
 use unidb_app::{
     AppService, AuditEntry, BundleImportReport, BundlePreview, CheckStatus, GitRepoStatus,
     HistoryEntry, ImportOptions, ImportReport, MigrationFile, MigrationReport, MultiTargetSummary,
-    ReleaseInfo, ResultDiff, SavedQuery, SecurityReport, TableSnapshot, git_dir_status,
+    ReleaseInfo, ResultDiff, SavedQuery, ScheduledJob, SchemaHealthReport, SecurityReport,
+    SyncFlushReport, SyncQueueItem, TableSnapshot, WasmPluginRecord, git_dir_status,
 };
 use unidb_core::{
     ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, ErrorCategory,
@@ -220,6 +221,34 @@ struct AppModel {
     bundle_inspect_button: gtk::Button,
     bundle_status: gtk::Label,
     migrations_git_status: GitRepoStatus,
+    platform_stack: gtk::Stack,
+    platform_conn_ids: Vec<Uuid>,
+    doctor_conn_dropdown: gtk::DropDown,
+    doctor_run_button: gtk::Button,
+    doctor_status: gtk::Label,
+    doctor_list: gtk::ListBox,
+    jobs_conn_dropdown: gtk::DropDown,
+    jobs_name_entry: gtk::Entry,
+    jobs_sql_entry: gtk::Entry,
+    jobs_interval_spin: gtk::SpinButton,
+    jobs_add_button: gtk::Button,
+    jobs_sweep_button: gtk::Button,
+    jobs_status: gtk::Label,
+    jobs_list: gtk::ListBox,
+    plugins_install_sample_button: gtk::Button,
+    plugins_arg_a: gtk::SpinButton,
+    plugins_arg_b: gtk::SpinButton,
+    plugins_status: gtk::Label,
+    plugins_list: gtk::ListBox,
+    sync_conn_dropdown: gtk::DropDown,
+    sync_label_entry: gtk::Entry,
+    sync_sql_entry: gtk::Entry,
+    sync_guard_entry: gtk::Entry,
+    sync_expected_entry: gtk::Entry,
+    sync_queue_button: gtk::Button,
+    sync_flush_button: gtk::Button,
+    sync_status: gtk::Label,
+    sync_list: gtk::ListBox,
 }
 
 enum AppMsg {
@@ -351,6 +380,32 @@ enum AppMsg {
     ConfirmImportTeamBundle(std::path::PathBuf),
     TeamBundleImported(Box<BundleImportReport>),
     TeamBundleFailed(String),
+    PlatformTab(String),
+    DoctorRun,
+    DoctorCompleted(Box<SchemaHealthReport>),
+    DoctorFailed(String),
+    JobsRefresh,
+    JobsLoaded(Vec<ScheduledJob>),
+    JobCreate,
+    JobRunNow(Uuid),
+    JobsRunDue,
+    JobToggle(Uuid, bool),
+    JobDelete(Uuid),
+    JobFailed(String),
+    PluginsRefresh,
+    PluginsLoaded(Vec<WasmPluginRecord>),
+    PluginInstallSample,
+    PluginExecute(Uuid, String),
+    PluginExecuted(String, String, i32),
+    PluginDelete(Uuid),
+    PluginFailed(String),
+    SyncRefresh,
+    SyncLoaded(Vec<SyncQueueItem>),
+    SyncEnqueue,
+    SyncFlush,
+    SyncFlushed(SyncFlushReport),
+    SyncDelete(Uuid),
+    SyncFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -484,6 +539,32 @@ impl std::fmt::Debug for AppMsg {
             Self::ConfirmImportTeamBundle(_) => "ConfirmImportTeamBundle",
             Self::TeamBundleImported(_) => "TeamBundleImported",
             Self::TeamBundleFailed(_) => "TeamBundleFailed",
+            Self::PlatformTab(_) => "PlatformTab",
+            Self::DoctorRun => "DoctorRun",
+            Self::DoctorCompleted(_) => "DoctorCompleted",
+            Self::DoctorFailed(_) => "DoctorFailed",
+            Self::JobsRefresh => "JobsRefresh",
+            Self::JobsLoaded(_) => "JobsLoaded",
+            Self::JobCreate => "JobCreate",
+            Self::JobRunNow(_) => "JobRunNow",
+            Self::JobsRunDue => "JobsRunDue",
+            Self::JobToggle(_, _) => "JobToggle",
+            Self::JobDelete(_) => "JobDelete",
+            Self::JobFailed(_) => "JobFailed",
+            Self::PluginsRefresh => "PluginsRefresh",
+            Self::PluginsLoaded(_) => "PluginsLoaded",
+            Self::PluginInstallSample => "PluginInstallSample",
+            Self::PluginExecute(_, _) => "PluginExecute",
+            Self::PluginExecuted(_, _, _) => "PluginExecuted",
+            Self::PluginDelete(_) => "PluginDelete",
+            Self::PluginFailed(_) => "PluginFailed",
+            Self::SyncRefresh => "SyncRefresh",
+            Self::SyncLoaded(_) => "SyncLoaded",
+            Self::SyncEnqueue => "SyncEnqueue",
+            Self::SyncFlush => "SyncFlush",
+            Self::SyncFlushed(_) => "SyncFlushed",
+            Self::SyncDelete(_) => "SyncDelete",
+            Self::SyncFailed(_) => "SyncFailed",
         })
     }
 }
@@ -596,6 +677,33 @@ struct ShellWidgets {
     bundle_export_button: gtk::Button,
     bundle_inspect_button: gtk::Button,
     bundle_status: gtk::Label,
+    platform_stack: gtk::Stack,
+    doctor_conn_dropdown: gtk::DropDown,
+    doctor_run_button: gtk::Button,
+    doctor_status: gtk::Label,
+    doctor_list: gtk::ListBox,
+    jobs_conn_dropdown: gtk::DropDown,
+    jobs_name_entry: gtk::Entry,
+    jobs_sql_entry: gtk::Entry,
+    jobs_interval_spin: gtk::SpinButton,
+    jobs_add_button: gtk::Button,
+    jobs_sweep_button: gtk::Button,
+    jobs_status: gtk::Label,
+    jobs_list: gtk::ListBox,
+    plugins_install_sample_button: gtk::Button,
+    plugins_arg_a: gtk::SpinButton,
+    plugins_arg_b: gtk::SpinButton,
+    plugins_status: gtk::Label,
+    plugins_list: gtk::ListBox,
+    sync_conn_dropdown: gtk::DropDown,
+    sync_label_entry: gtk::Entry,
+    sync_sql_entry: gtk::Entry,
+    sync_guard_entry: gtk::Entry,
+    sync_expected_entry: gtk::Entry,
+    sync_queue_button: gtk::Button,
+    sync_flush_button: gtk::Button,
+    sync_status: gtk::Label,
+    sync_list: gtk::ListBox,
 }
 
 #[relm4::component]
@@ -793,6 +901,34 @@ impl SimpleComponent for AppModel {
             bundle_inspect_button: widgets.bundle_inspect_button,
             bundle_status: widgets.bundle_status,
             migrations_git_status: GitRepoStatus::default(),
+            platform_stack: widgets.platform_stack,
+            platform_conn_ids: Vec::new(),
+            doctor_conn_dropdown: widgets.doctor_conn_dropdown,
+            doctor_run_button: widgets.doctor_run_button,
+            doctor_status: widgets.doctor_status,
+            doctor_list: widgets.doctor_list,
+            jobs_conn_dropdown: widgets.jobs_conn_dropdown,
+            jobs_name_entry: widgets.jobs_name_entry,
+            jobs_sql_entry: widgets.jobs_sql_entry,
+            jobs_interval_spin: widgets.jobs_interval_spin,
+            jobs_add_button: widgets.jobs_add_button,
+            jobs_sweep_button: widgets.jobs_sweep_button,
+            jobs_status: widgets.jobs_status,
+            jobs_list: widgets.jobs_list,
+            plugins_install_sample_button: widgets.plugins_install_sample_button,
+            plugins_arg_a: widgets.plugins_arg_a,
+            plugins_arg_b: widgets.plugins_arg_b,
+            plugins_status: widgets.plugins_status,
+            plugins_list: widgets.plugins_list,
+            sync_conn_dropdown: widgets.sync_conn_dropdown,
+            sync_label_entry: widgets.sync_label_entry,
+            sync_sql_entry: widgets.sync_sql_entry,
+            sync_guard_entry: widgets.sync_guard_entry,
+            sync_expected_entry: widgets.sync_expected_entry,
+            sync_queue_button: widgets.sync_queue_button,
+            sync_flush_button: widgets.sync_flush_button,
+            sync_status: widgets.sync_status,
+            sync_list: widgets.sync_list,
         };
 
         if let Some(error) = &model.error {
@@ -841,6 +977,9 @@ impl SimpleComponent for AppModel {
                 }
                 if index == 10 && !self.security_loaded {
                     self.load_security(&sender);
+                }
+                if index == 11 {
+                    self.refresh_platform(&sender);
                 }
             }
             AppMsg::Refresh => {
@@ -2601,6 +2740,328 @@ impl SimpleComponent for AppModel {
                 self.bundle_status.set_label(&error);
                 self.show_toast(&error);
             }
+            AppMsg::PlatformTab(name) => {
+                self.platform_stack.set_visible_child_name(&name);
+            }
+            AppMsg::DoctorRun => {
+                let idx = self.doctor_conn_dropdown.selected() as usize;
+                let Some(&connection_id) = self.platform_conn_ids.get(idx) else {
+                    self.show_toast("Save and connect a SQL database first.");
+                    return;
+                };
+                if !self.connected.contains(&connection_id) {
+                    self.show_toast("Connect this database first before diagnosing schema.");
+                    return;
+                }
+                let Some(service) = &self.service else {
+                    return;
+                };
+                self.doctor_status
+                    .set_label("Inspecting tables and foreign keys...");
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service
+                        .diagnose_connection_schema(connection_id, "main")
+                        .await
+                    {
+                        Ok(report) => sender.input(AppMsg::DoctorCompleted(Box::new(report))),
+                        Err(error) => sender.input(AppMsg::DoctorFailed(format!(
+                            "Diagnosis failed: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::DoctorCompleted(report) => {
+                self.doctor_status.set_label(&format!(
+                    "Health Score: {}/100  |  {} tables  |  {} errors, {} warnings, {} info",
+                    report.score,
+                    report.tables_scanned,
+                    report.errors,
+                    report.warnings,
+                    report.infos
+                ));
+                self.populate_doctor_list(&report, &sender);
+            }
+            AppMsg::DoctorFailed(msg) => {
+                self.doctor_status.set_label(&msg);
+                self.show_toast(&msg);
+            }
+            AppMsg::JobsRefresh => self.load_jobs(&sender),
+            AppMsg::JobsLoaded(jobs) => self.populate_jobs_list(&jobs, &sender),
+            AppMsg::JobCreate => {
+                let idx = self.jobs_conn_dropdown.selected() as usize;
+                let Some(&connection_id) = self.platform_conn_ids.get(idx) else {
+                    self.show_toast("Save a connection first.");
+                    return;
+                };
+                let name = self.jobs_name_entry.text().to_string();
+                let sql = self.jobs_sql_entry.text().to_string();
+                let interval = self.jobs_interval_spin.value_as_int() as i64;
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service
+                        .create_job(&name, connection_id, &sql, interval)
+                        .await
+                    {
+                        Ok(_) => {
+                            sender.input(AppMsg::Toast("Scheduled job saved.".to_string()));
+                            sender.input(AppMsg::JobsRefresh);
+                        }
+                        Err(error) => {
+                            sender.input(AppMsg::JobFailed(error.user_message().to_string()))
+                        }
+                    }
+                });
+                self.jobs_name_entry.set_text("");
+                self.jobs_sql_entry.set_text("");
+            }
+            AppMsg::JobRunNow(id) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.run_job_now(id).await {
+                        Ok(updated) => {
+                            sender.input(AppMsg::Toast(format!(
+                                "Job '{}' ran: {}",
+                                updated.name,
+                                updated.last_status.as_deref().unwrap_or("done")
+                            )));
+                            sender.input(AppMsg::JobsRefresh);
+                        }
+                        Err(error) => {
+                            sender.input(AppMsg::JobFailed(error.user_message().to_string()))
+                        }
+                    }
+                });
+            }
+            AppMsg::JobsRunDue => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.run_due_jobs().await {
+                        Ok(ran) => {
+                            sender.input(AppMsg::Toast(format!(
+                                "Executed {} due job{}.",
+                                ran.len(),
+                                plural(ran.len())
+                            )));
+                            sender.input(AppMsg::JobsRefresh);
+                        }
+                        Err(error) => {
+                            sender.input(AppMsg::JobFailed(error.user_message().to_string()))
+                        }
+                    }
+                });
+            }
+            AppMsg::JobToggle(id, enabled) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    if let Err(error) = service.set_job_enabled(id, enabled).await {
+                        sender.input(AppMsg::JobFailed(error.user_message().to_string()));
+                    } else {
+                        sender.input(AppMsg::JobsRefresh);
+                    }
+                });
+            }
+            AppMsg::JobDelete(id) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    if let Err(error) = service.delete_job(id).await {
+                        sender.input(AppMsg::JobFailed(error.user_message().to_string()));
+                    } else {
+                        sender.input(AppMsg::JobsRefresh);
+                    }
+                });
+            }
+            AppMsg::JobFailed(msg) => {
+                self.jobs_status.set_label(&msg);
+                self.show_toast(&msg);
+            }
+            AppMsg::PluginsRefresh => self.load_plugins(&sender),
+            AppMsg::PluginsLoaded(plugins) => self.populate_plugins_list(&plugins, &sender),
+            AppMsg::PluginInstallSample => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.install_sample_wasm_plugin().await {
+                        Ok(rec) => {
+                            sender.input(AppMsg::Toast(format!(
+                                "Installed WASM plugin '{}'",
+                                rec.name
+                            )));
+                            sender.input(AppMsg::PluginsRefresh);
+                        }
+                        Err(error) => {
+                            sender.input(AppMsg::PluginFailed(error.user_message().to_string()))
+                        }
+                    }
+                });
+            }
+            AppMsg::PluginExecute(id, export_name) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let a = self.plugins_arg_a.value_as_int();
+                let b = self.plugins_arg_b.value_as_int();
+                let args = if export_name == "add" {
+                    vec![a, b]
+                } else {
+                    vec![a]
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.run_wasm_plugin(id, &export_name, &args).await {
+                        Ok(val) => sender.input(AppMsg::PluginExecuted(
+                            "WASM".to_string(),
+                            export_name,
+                            val,
+                        )),
+                        Err(error) => {
+                            sender.input(AppMsg::PluginFailed(error.user_message().to_string()))
+                        }
+                    }
+                });
+            }
+            AppMsg::PluginExecuted(_plugin, export_name, val) => {
+                let msg = format!("WASM export '{export_name}' returned {val}");
+                self.plugins_status.set_label(&msg);
+                self.show_toast(&msg);
+            }
+            AppMsg::PluginDelete(id) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    if let Err(error) = service.delete_wasm_plugin(id).await {
+                        sender.input(AppMsg::PluginFailed(error.user_message().to_string()));
+                    } else {
+                        sender.input(AppMsg::PluginsRefresh);
+                    }
+                });
+            }
+            AppMsg::PluginFailed(msg) => {
+                self.plugins_status.set_label(&msg);
+                self.show_toast(&msg);
+            }
+            AppMsg::SyncRefresh => self.load_sync(&sender),
+            AppMsg::SyncLoaded(items) => self.populate_sync_list(&items, &sender),
+            AppMsg::SyncEnqueue => {
+                let idx = self.sync_conn_dropdown.selected() as usize;
+                let Some(&connection_id) = self.platform_conn_ids.get(idx) else {
+                    self.show_toast("Save a connection first.");
+                    return;
+                };
+                let label = self.sync_label_entry.text().to_string();
+                let sql = self.sync_sql_entry.text().to_string();
+                let guard = self.sync_guard_entry.text().to_string();
+                let expected = self.sync_expected_entry.text().to_string();
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    let g = if guard.trim().is_empty() {
+                        None
+                    } else {
+                        Some(guard)
+                    };
+                    let e = if expected.trim().is_empty() {
+                        None
+                    } else {
+                        Some(expected)
+                    };
+                    match service
+                        .queue_offline_operation(connection_id, &label, &sql, g, e)
+                        .await
+                    {
+                        Ok(_) => {
+                            sender.input(AppMsg::Toast("Queued for offline sync.".to_string()));
+                            sender.input(AppMsg::SyncRefresh);
+                        }
+                        Err(error) => {
+                            sender.input(AppMsg::SyncFailed(error.user_message().to_string()))
+                        }
+                    }
+                });
+                self.sync_label_entry.set_text("");
+                self.sync_sql_entry.set_text("");
+                self.sync_guard_entry.set_text("");
+                self.sync_expected_entry.set_text("");
+            }
+            AppMsg::SyncFlush => {
+                let idx = self.sync_conn_dropdown.selected() as usize;
+                let Some(&connection_id) = self.platform_conn_ids.get(idx) else {
+                    self.show_toast("Save a connection first.");
+                    return;
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    match service.flush_sync_queue(connection_id).await {
+                        Ok(report) => sender.input(AppMsg::SyncFlushed(report)),
+                        Err(error) => {
+                            sender.input(AppMsg::SyncFailed(error.user_message().to_string()))
+                        }
+                    }
+                });
+            }
+            AppMsg::SyncFlushed(report) => {
+                let msg = format!(
+                    "Sync complete: {} synced, {} conflicts, {} failed.",
+                    report.synced, report.conflicts, report.failed
+                );
+                self.sync_status.set_label(&msg);
+                self.show_toast(&msg);
+                self.load_sync(&sender);
+            }
+            AppMsg::SyncDelete(id) => {
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                self.handle.spawn(async move {
+                    if let Err(error) = service.delete_sync_item(id).await {
+                        sender.input(AppMsg::SyncFailed(error.user_message().to_string()));
+                    } else {
+                        sender.input(AppMsg::SyncRefresh);
+                    }
+                });
+            }
+            AppMsg::SyncFailed(msg) => {
+                self.sync_status.set_label(&msg);
+                self.show_toast(&msg);
+            }
         }
     }
 }
@@ -2628,7 +3089,8 @@ impl AppModel {
             7 => ("schema", "Schema"),
             8 => ("builder", "Builder"),
             9 => ("migrations", "Migrations"),
-            _ => ("security", "Security"),
+            10 => ("security", "Security"),
+            _ => ("platform", "Platform"),
         };
         self.page_stack.set_visible_child_name(name);
         self.content_page.set_title(title);
@@ -2666,6 +3128,13 @@ impl AppModel {
         self.bundle_export_button.set_sensitive(ready && !self.busy);
         self.bundle_inspect_button
             .set_sensitive(ready && !self.busy);
+        self.doctor_run_button.set_sensitive(ready && !self.busy);
+        self.jobs_add_button.set_sensitive(ready && !self.busy);
+        self.jobs_sweep_button.set_sensitive(ready && !self.busy);
+        self.plugins_install_sample_button
+            .set_sensitive(ready && !self.busy);
+        self.sync_queue_button.set_sensitive(ready && !self.busy);
+        self.sync_flush_button.set_sensitive(ready && !self.busy);
     }
 
     fn load_connections(&self, sender: &ComponentSender<Self>) {
@@ -4077,6 +4546,291 @@ impl AppModel {
             row.set_child(Some(&content));
             self.snapshots_list.append(&row);
             self.snapshots_rows.push(row);
+        }
+    }
+
+    fn refresh_platform(&mut self, sender: &ComponentSender<Self>) {
+        self.platform_conn_ids = self.connections.iter().map(|profile| profile.id).collect();
+        let labels: Vec<String> = self
+            .connections
+            .iter()
+            .map(|profile| {
+                if self.connected.contains(&profile.id) {
+                    format!("{} (live)", profile.name)
+                } else {
+                    profile.name.clone()
+                }
+            })
+            .collect();
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let model = gtk::StringList::new(&label_refs);
+        self.doctor_conn_dropdown.set_model(Some(&model));
+        self.jobs_conn_dropdown.set_model(Some(&model));
+        self.sync_conn_dropdown.set_model(Some(&model));
+        if !labels.is_empty() {
+            let live_idx = self
+                .connections
+                .iter()
+                .position(|profile| self.connected.contains(&profile.id))
+                .unwrap_or(0) as u32;
+            self.doctor_conn_dropdown.set_selected(live_idx);
+            self.jobs_conn_dropdown.set_selected(live_idx);
+            self.sync_conn_dropdown.set_selected(live_idx);
+        }
+        self.load_jobs(sender);
+        self.load_plugins(sender);
+        self.load_sync(sender);
+    }
+
+    fn load_jobs(&self, sender: &ComponentSender<Self>) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.handle.spawn(async move {
+            match service.list_jobs().await {
+                Ok(jobs) => sender.input(AppMsg::JobsLoaded(jobs)),
+                Err(error) => sender.input(AppMsg::JobFailed(error.user_message().to_string())),
+            }
+        });
+    }
+
+    fn load_plugins(&self, sender: &ComponentSender<Self>) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.handle.spawn(async move {
+            match service.list_wasm_plugins().await {
+                Ok(plugins) => sender.input(AppMsg::PluginsLoaded(plugins)),
+                Err(error) => sender.input(AppMsg::PluginFailed(error.user_message().to_string())),
+            }
+        });
+    }
+
+    fn load_sync(&self, sender: &ComponentSender<Self>) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        self.handle.spawn(async move {
+            match service.list_sync_queue(None).await {
+                Ok(items) => sender.input(AppMsg::SyncLoaded(items)),
+                Err(error) => sender.input(AppMsg::SyncFailed(error.user_message().to_string())),
+            }
+        });
+    }
+
+    fn clear_list_box(list: &gtk::ListBox) {
+        while let Some(row) = list.row_at_index(0) {
+            list.remove(&row);
+        }
+    }
+
+    fn populate_doctor_list(&self, report: &SchemaHealthReport, _sender: &ComponentSender<Self>) {
+        Self::clear_list_box(&self.doctor_list);
+        if report.findings.is_empty() {
+            let row = adw::ActionRow::builder()
+                .title("No schema issues detected")
+                .subtitle(format!(
+                    "Scanned {} tables cleanly with score {}/100.",
+                    report.tables_scanned, report.score
+                ))
+                .build();
+            self.doctor_list.append(&row);
+            return;
+        }
+
+        for finding in &report.findings {
+            let target = match &finding.column {
+                Some(col) => format!("{}.{}", finding.table, col),
+                None => finding.table.clone(),
+            };
+            let title = format!(
+                "[{}] {} — {}",
+                finding.severity.label(),
+                target,
+                finding.title
+            );
+            let subtitle = match &finding.suggested_sql {
+                Some(sql) => format!("{} Suggested SQL: {}", finding.explanation, sql),
+                None => finding.explanation.clone(),
+            };
+            let row = adw::ActionRow::builder()
+                .title(&title)
+                .subtitle(&subtitle)
+                .build();
+            self.doctor_list.append(&row);
+        }
+    }
+
+    fn populate_jobs_list(&self, jobs: &[ScheduledJob], sender: &ComponentSender<Self>) {
+        Self::clear_list_box(&self.jobs_list);
+        self.jobs_status.set_label(&format!(
+            "{} scheduled job{} configured",
+            jobs.len(),
+            plural(jobs.len())
+        ));
+        if jobs.is_empty() {
+            let row = adw::ActionRow::builder()
+                .title("No scheduled jobs yet")
+                .subtitle("Enter a name, SQL statement, and interval above to schedule work.")
+                .build();
+            self.jobs_list.append(&row);
+            return;
+        }
+
+        for job in jobs {
+            let row = adw::ActionRow::builder()
+                .title(&job.name)
+                .subtitle(format!(
+                    "Every {}s | {} | Status: {} | Next: {}",
+                    job.interval_seconds,
+                    job.sql,
+                    job.last_status.as_deref().unwrap_or("pending"),
+                    job.next_run_at
+                ))
+                .build();
+
+            let toggle = gtk::Switch::builder()
+                .active(job.enabled)
+                .valign(gtk::Align::Center)
+                .tooltip_text("Enable or pause this scheduled job")
+                .build();
+            {
+                let sender = sender.clone();
+                let id = job.id;
+                toggle.connect_state_set(move |_, active| {
+                    sender.input(AppMsg::JobToggle(id, active));
+                    gtk::glib::Propagation::Proceed
+                });
+            }
+            row.add_suffix(&toggle);
+
+            let run_btn = gtk::Button::with_label("Run");
+            run_btn.set_valign(gtk::Align::Center);
+            run_btn.add_css_class("suggested-action");
+            {
+                let sender = sender.clone();
+                let id = job.id;
+                run_btn.connect_clicked(move |_| sender.input(AppMsg::JobRunNow(id)));
+            }
+            row.add_suffix(&run_btn);
+
+            let delete_btn = gtk::Button::with_label("Delete");
+            delete_btn.set_valign(gtk::Align::Center);
+            delete_btn.add_css_class("destructive-action");
+            {
+                let sender = sender.clone();
+                let id = job.id;
+                delete_btn.connect_clicked(move |_| sender.input(AppMsg::JobDelete(id)));
+            }
+            row.add_suffix(&delete_btn);
+
+            self.jobs_list.append(&row);
+        }
+    }
+
+    fn populate_plugins_list(&self, plugins: &[WasmPluginRecord], sender: &ComponentSender<Self>) {
+        Self::clear_list_box(&self.plugins_list);
+        if plugins.is_empty() {
+            self.plugins_status
+                .set_label("No WASM plugins installed. Install the built in sample module.");
+            let row = adw::ActionRow::builder()
+                .title("No WASM plugins installed")
+                .subtitle("Click Install Sample WASM to register a pure Rust sandboxed module.")
+                .build();
+            self.plugins_list.append(&row);
+            return;
+        }
+        self.plugins_status.set_label(&format!(
+            "{} WASM plugin{} installed",
+            plugins.len(),
+            plural(plugins.len())
+        ));
+
+        for plugin in plugins {
+            let exports = plugin.exports.join(", ");
+            let row = adw::ActionRow::builder()
+                .title(&plugin.name)
+                .subtitle(format!(
+                    "Exports: {exports} | Installed: {}",
+                    plugin.installed_at
+                ))
+                .build();
+
+            for export_name in &plugin.exports {
+                let run_btn = gtk::Button::with_label(&format!("Run {export_name}"));
+                run_btn.set_valign(gtk::Align::Center);
+                run_btn.add_css_class("suggested-action");
+                {
+                    let sender = sender.clone();
+                    let id = plugin.id;
+                    let name = export_name.clone();
+                    run_btn.connect_clicked(move |_| {
+                        sender.input(AppMsg::PluginExecute(id, name.clone()))
+                    });
+                }
+                row.add_suffix(&run_btn);
+            }
+
+            let delete_btn = gtk::Button::with_label("Delete");
+            delete_btn.set_valign(gtk::Align::Center);
+            delete_btn.add_css_class("destructive-action");
+            {
+                let sender = sender.clone();
+                let id = plugin.id;
+                delete_btn.connect_clicked(move |_| sender.input(AppMsg::PluginDelete(id)));
+            }
+            row.add_suffix(&delete_btn);
+
+            self.plugins_list.append(&row);
+        }
+    }
+
+    fn populate_sync_list(&self, items: &[SyncQueueItem], sender: &ComponentSender<Self>) {
+        Self::clear_list_box(&self.sync_list);
+        let pending_count = items.iter().filter(|i| i.status == "pending").count();
+        self.sync_status.set_label(&format!(
+            "{} queued item{} ({} pending)",
+            items.len(),
+            plural(items.len()),
+            pending_count
+        ));
+        if items.is_empty() {
+            let row = adw::ActionRow::builder()
+                .title("Offline sync queue is empty")
+                .subtitle("Queue SQL mutations while offline and flush when connected.")
+                .build();
+            self.sync_list.append(&row);
+            return;
+        }
+
+        for item in items {
+            let err_note = item
+                .error_message
+                .as_deref()
+                .map(|msg| format!(" | {msg}"))
+                .unwrap_or_default();
+            let row = adw::ActionRow::builder()
+                .title(format!("[{}] {}", item.status, item.label))
+                .subtitle(format!("{}{err_note}", item.sql))
+                .build();
+
+            let delete_btn = gtk::Button::with_label("Delete");
+            delete_btn.set_valign(gtk::Align::Center);
+            delete_btn.add_css_class("destructive-action");
+            {
+                let sender = sender.clone();
+                let id = item.id;
+                delete_btn.connect_clicked(move |_| sender.input(AppMsg::SyncDelete(id)));
+            }
+            row.add_suffix(&delete_btn);
+
+            self.sync_list.append(&row);
         }
     }
 
@@ -5734,6 +6488,258 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     migrations_stack.add_named(&migrations_form, Some("form"));
     migrations_stack.set_visible_child_name("empty");
 
+    // Platform page (Schema Doctor, Scheduled Jobs, WASM Plugins, Offline Sync)
+    let platform_stack = gtk::Stack::new();
+    platform_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+
+    // 1. Schema Doctor subpage
+    let doctor_conn_dropdown = gtk::DropDown::from_strings(&["No connections"]);
+    doctor_conn_dropdown.set_tooltip_text(Some("Select database connection to diagnose"));
+    let doctor_run_button = gtk::Button::with_label("Run Schema Doctor");
+    doctor_run_button.add_css_class("suggested-action");
+    doctor_run_button.set_tooltip_text(Some("Inspect schema health and optimization hints"));
+    {
+        let sender = sender.clone();
+        doctor_run_button.connect_clicked(move |_| sender.input(AppMsg::DoctorRun));
+    }
+    let doctor_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    doctor_toolbar.set_margin_all(12);
+    doctor_toolbar.append(&doctor_conn_dropdown);
+    doctor_toolbar.append(&doctor_run_button);
+
+    let doctor_status = gtk::Label::new(Some("Run Schema Doctor on a connected SQL database."));
+    doctor_status.set_xalign(0.0);
+    doctor_status.set_margin_start(12);
+    doctor_status.set_margin_end(12);
+    doctor_status.add_css_class("dim-label");
+
+    let doctor_list = gtk::ListBox::new();
+    doctor_list.set_selection_mode(gtk::SelectionMode::None);
+    doctor_list.add_css_class("boxed-list");
+    let doctor_scroll = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .child(&doctor_list)
+        .build();
+    let doctor_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    doctor_box.append(&doctor_toolbar);
+    doctor_box.append(&doctor_status);
+    doctor_box.append(&doctor_scroll);
+
+    // 2. Scheduled Jobs subpage
+    let jobs_conn_dropdown = gtk::DropDown::from_strings(&["No connections"]);
+    jobs_conn_dropdown.set_tooltip_text(Some("Target database connection"));
+    let jobs_name_entry = gtk::Entry::builder()
+        .placeholder_text("Job name (e.g. Hourly Count)")
+        .hexpand(true)
+        .build();
+    let jobs_sql_entry = gtk::Entry::builder()
+        .placeholder_text("SQL statement (e.g. SELECT count(*) FROM items)")
+        .hexpand(true)
+        .build();
+    let jobs_interval_spin = gtk::SpinButton::with_range(5.0, 86400.0, 5.0);
+    jobs_interval_spin.set_value(60.0);
+    jobs_interval_spin.set_tooltip_text(Some("Run interval in seconds"));
+    let jobs_add_button = gtk::Button::with_label("Create Job");
+    jobs_add_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        jobs_add_button.connect_clicked(move |_| sender.input(AppMsg::JobCreate));
+    }
+    let jobs_sweep_button = gtk::Button::with_label("Run Due Jobs");
+    {
+        let sender = sender.clone();
+        jobs_sweep_button.connect_clicked(move |_| sender.input(AppMsg::JobsRunDue));
+    }
+
+    let jobs_form = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    jobs_form.set_margin_all(12);
+    jobs_form.append(&jobs_conn_dropdown);
+    jobs_form.append(&jobs_name_entry);
+    jobs_form.append(&jobs_sql_entry);
+    jobs_form.append(&jobs_interval_spin);
+    jobs_form.append(&jobs_add_button);
+    jobs_form.append(&jobs_sweep_button);
+
+    let jobs_status = gtk::Label::new(Some("0 scheduled jobs configured"));
+    jobs_status.set_xalign(0.0);
+    jobs_status.set_margin_start(12);
+    jobs_status.set_margin_end(12);
+    jobs_status.add_css_class("dim-label");
+
+    let jobs_list = gtk::ListBox::new();
+    jobs_list.set_selection_mode(gtk::SelectionMode::None);
+    jobs_list.add_css_class("boxed-list");
+    let jobs_scroll = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .child(&jobs_list)
+        .build();
+    let jobs_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    jobs_box.append(&jobs_form);
+    jobs_box.append(&jobs_status);
+    jobs_box.append(&jobs_scroll);
+
+    // 3. WASM Plugins subpage
+    let plugins_install_sample_button = gtk::Button::with_label("Install Sample WASM");
+    plugins_install_sample_button.add_css_class("suggested-action");
+    plugins_install_sample_button
+        .set_tooltip_text(Some("Install the built in sandboxed WASM metric plugin"));
+    {
+        let sender = sender.clone();
+        plugins_install_sample_button
+            .connect_clicked(move |_| sender.input(AppMsg::PluginInstallSample));
+    }
+    let plugins_arg_a = gtk::SpinButton::with_range(-1_000_000.0, 1_000_000.0, 1.0);
+    plugins_arg_a.set_value(20.0);
+    plugins_arg_a.set_tooltip_text(Some("Argument A"));
+    let plugins_arg_b = gtk::SpinButton::with_range(-1_000_000.0, 1_000_000.0, 1.0);
+    plugins_arg_b.set_value(22.0);
+    plugins_arg_b.set_tooltip_text(Some("Argument B (used for two argument exports)"));
+    let plugins_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    plugins_toolbar.set_margin_all(12);
+    plugins_toolbar.append(&plugins_install_sample_button);
+    plugins_toolbar.append(&gtk::Label::new(Some("Arg A:")));
+    plugins_toolbar.append(&plugins_arg_a);
+    plugins_toolbar.append(&gtk::Label::new(Some("Arg B:")));
+    plugins_toolbar.append(&plugins_arg_b);
+
+    let plugins_status = gtk::Label::new(Some("Pure Rust sandboxed WASM plugin runtime ready."));
+    plugins_status.set_xalign(0.0);
+    plugins_status.set_margin_start(12);
+    plugins_status.set_margin_end(12);
+    plugins_status.add_css_class("dim-label");
+
+    let plugins_list = gtk::ListBox::new();
+    plugins_list.set_selection_mode(gtk::SelectionMode::None);
+    plugins_list.add_css_class("boxed-list");
+    let plugins_scroll = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .child(&plugins_list)
+        .build();
+    let plugins_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    plugins_box.append(&plugins_toolbar);
+    plugins_box.append(&plugins_status);
+    plugins_box.append(&plugins_scroll);
+
+    // 4. Offline Sync subpage
+    let sync_conn_dropdown = gtk::DropDown::from_strings(&["No connections"]);
+    sync_conn_dropdown.set_tooltip_text(Some("Target connection for queued mutations"));
+    let sync_label_entry = gtk::Entry::builder()
+        .placeholder_text("Operation label")
+        .hexpand(true)
+        .build();
+    let sync_sql_entry = gtk::Entry::builder()
+        .placeholder_text("Mutation SQL")
+        .hexpand(true)
+        .build();
+    let sync_guard_entry = gtk::Entry::builder()
+        .placeholder_text("Optional conflict guard SQL")
+        .build();
+    let sync_expected_entry = gtk::Entry::builder()
+        .placeholder_text("Expected scalar")
+        .build();
+    let sync_queue_button = gtk::Button::with_label("Queue Offline");
+    {
+        let sender = sender.clone();
+        sync_queue_button.connect_clicked(move |_| sender.input(AppMsg::SyncEnqueue));
+    }
+    let sync_flush_button = gtk::Button::with_label("Flush Queue");
+    sync_flush_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        sync_flush_button.connect_clicked(move |_| sender.input(AppMsg::SyncFlush));
+    }
+
+    let sync_form_top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    sync_form_top.set_margin_start(12);
+    sync_form_top.set_margin_end(12);
+    sync_form_top.set_margin_top(12);
+    sync_form_top.append(&sync_conn_dropdown);
+    sync_form_top.append(&sync_label_entry);
+    sync_form_top.append(&sync_sql_entry);
+
+    let sync_form_bottom = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    sync_form_bottom.set_margin_start(12);
+    sync_form_bottom.set_margin_end(12);
+    sync_form_bottom.append(&sync_guard_entry);
+    sync_form_bottom.append(&sync_expected_entry);
+    sync_form_bottom.append(&sync_queue_button);
+    sync_form_bottom.append(&sync_flush_button);
+
+    let sync_status = gtk::Label::new(Some("0 queued items"));
+    sync_status.set_xalign(0.0);
+    sync_status.set_margin_start(12);
+    sync_status.set_margin_end(12);
+    sync_status.add_css_class("dim-label");
+
+    let sync_list = gtk::ListBox::new();
+    sync_list.set_selection_mode(gtk::SelectionMode::None);
+    sync_list.add_css_class("boxed-list");
+    let sync_scroll = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .child(&sync_list)
+        .build();
+    let sync_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    sync_box.append(&sync_form_top);
+    sync_box.append(&sync_form_bottom);
+    sync_box.append(&sync_status);
+    sync_box.append(&sync_scroll);
+
+    platform_stack.add_named(&doctor_box, Some("doctor"));
+    platform_stack.add_named(&jobs_box, Some("jobs"));
+    platform_stack.add_named(&plugins_box, Some("plugins"));
+    platform_stack.add_named(&sync_box, Some("sync"));
+    platform_stack.set_visible_child_name("doctor");
+
+    let platform_tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    platform_tabs.add_css_class("linked");
+    platform_tabs.set_halign(gtk::Align::Center);
+    platform_tabs.set_margin_top(12);
+    let mut tab_group: Option<gtk::ToggleButton> = None;
+    for (tab_id, tab_label) in [
+        ("doctor", "Schema Doctor"),
+        ("jobs", "Scheduled Jobs"),
+        ("plugins", "WASM Plugins"),
+        ("sync", "Offline Sync"),
+    ] {
+        let btn = gtk::ToggleButton::with_label(tab_label);
+        if let Some(first) = &tab_group {
+            btn.set_group(Some(first));
+        } else {
+            btn.set_active(true);
+            tab_group = Some(btn.clone());
+        }
+        {
+            let sender = sender.clone();
+            let id = tab_id.to_string();
+            btn.connect_toggled(move |button| {
+                if button.is_active() {
+                    sender.input(AppMsg::PlatformTab(id.clone()));
+                }
+            });
+        }
+        platform_tabs.append(&btn);
+    }
+
+    let platform_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    platform_box.append(&platform_tabs);
+    platform_box.append(&platform_stack);
+
     let page_stack = gtk::Stack::new();
     page_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     page_stack.add_named(&connections_stack, Some("connections"));
@@ -5747,6 +6753,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.add_named(&builder_stack, Some("builder"));
     page_stack.add_named(&migrations_stack, Some("migrations"));
     page_stack.add_named(&security_scroll, Some("security"));
+    page_stack.add_named(&platform_box, Some("platform"));
 
     let content_page = adw::NavigationPage::new(&page_stack, "Connections");
     let sidebar = gtk::ListBox::new();
@@ -5764,6 +6771,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         ("document-edit-symbolic", "Builder"),
         ("system-software-update-symbolic", "Migrations"),
         ("security-high-symbolic", "Security"),
+        ("applications-engineering-symbolic", "Platform"),
     ] {
         let row = gtk::ListBoxRow::new();
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -5936,6 +6944,33 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         bundle_export_button,
         bundle_inspect_button,
         bundle_status,
+        platform_stack,
+        doctor_conn_dropdown,
+        doctor_run_button,
+        doctor_status,
+        doctor_list,
+        jobs_conn_dropdown,
+        jobs_name_entry,
+        jobs_sql_entry,
+        jobs_interval_spin,
+        jobs_add_button,
+        jobs_sweep_button,
+        jobs_status,
+        jobs_list,
+        plugins_install_sample_button,
+        plugins_arg_a,
+        plugins_arg_b,
+        plugins_status,
+        plugins_list,
+        sync_conn_dropdown,
+        sync_label_entry,
+        sync_sql_entry,
+        sync_guard_entry,
+        sync_expected_entry,
+        sync_queue_button,
+        sync_flush_button,
+        sync_status,
+        sync_list,
     }
 }
 

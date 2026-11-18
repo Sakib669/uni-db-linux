@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
+use chrono::Utc;
 use tokio::runtime::Handle;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -18,18 +20,19 @@ use uuid::Uuid;
 
 use unidb_core::{
     BundleQuery, BundleVerification, ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo,
-    MultiTargetOutcome, MultiTargetSummary, QueryResult, ResultDiff, SqlDialect, TableColumnInfo,
-    TeamBundle, TransferFormat, UniDbError, coerce_value, diff_results, generate_fake_rows,
+    MultiTargetOutcome, MultiTargetSummary, QueryResult, ResultDiff, SchemaHealthReport,
+    SqlDialect, TableColumnInfo, TableSchemaInput, TeamBundle, TransferFormat, UniDbError,
+    WasmPluginModule, coerce_value, diagnose_schema, diff_results, generate_fake_rows,
     insert_statements, insertable_columns, inspect_bundle_json, mask_rows, merge_multi_results,
-    parse_import, rows_to_csv, rows_to_json, valid_identifier,
+    parse_import, rows_to_csv, rows_to_json, sample_metric_plugin_wasm, valid_identifier,
 };
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
     PostgresConnector, RedisConnector, Session, SqliteConnector,
 };
 use unidb_store::{
-    AuditEntry, HistoryEntry, KeyringKeyProvider, MasterKeyProvider, SavedQuery, Store,
-    TableSnapshot,
+    AuditEntry, HistoryEntry, KeyringKeyProvider, MasterKeyProvider, SavedQuery, ScheduledJob,
+    Store, SyncQueueItem, TableSnapshot, WasmPluginRecord,
 };
 
 use crate::bridge::{Bridge, QueryEvent};
@@ -120,6 +123,14 @@ pub struct BundleImportReport {
     pub connections_skipped: usize,
     pub queries_imported: usize,
     pub signature_valid: bool,
+}
+
+/// Summary returned after flushing the offline sync queue for a connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncFlushReport {
+    pub synced: usize,
+    pub conflicts: usize,
+    pub failed: usize,
 }
 
 pub struct AppService {
@@ -945,6 +956,398 @@ impl AppService {
             queries_imported,
             signature_valid: preview.verification.signature_valid,
         })
+    }
+
+    /// Runs the Schema Doctor across up to 50 tables on an open SQL connection.
+    pub async fn diagnose_connection_schema(
+        &self,
+        connection_id: Uuid,
+        database: &str,
+    ) -> Result<SchemaHealthReport, UniDbError> {
+        let profile = self
+            .require_store()?
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| {
+                UniDbError::new(
+                    "connection_not_found",
+                    ErrorCategory::ConnectionLost,
+                    "The connection profile could not be loaded",
+                )
+            })?;
+        let dialect = SqlDialect::for_engine(profile.engine).ok_or_else(|| {
+            UniDbError::new(
+                "schema_doctor_unsupported",
+                ErrorCategory::Unsupported,
+                "Schema Doctor is available for SQL engines only",
+            )
+        })?;
+        let tables = self.list_tables(connection_id, database).await?;
+        let mut inputs = Vec::new();
+        for table_name in tables.into_iter().take(50) {
+            let columns = self
+                .describe_table(connection_id, database, &table_name)
+                .await
+                .unwrap_or_default();
+            let foreign_keys = self
+                .foreign_keys(connection_id, database, &table_name)
+                .await
+                .unwrap_or_default();
+            inputs.push(TableSchemaInput {
+                table_name,
+                columns,
+                foreign_keys,
+            });
+        }
+        let report = diagnose_schema(dialect, &inputs);
+        self.audit_transfer(
+            "schema_doctor_run",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "database": database,
+                "tables_scanned": report.tables_scanned,
+                "score": report.score,
+                "errors": report.errors,
+                "warnings": report.warnings,
+            }),
+        )
+        .await?;
+        Ok(report)
+    }
+
+    /// Creates a new recurring scheduled SQL job.
+    pub async fn create_job(
+        &self,
+        name: &str,
+        connection_id: Uuid,
+        sql: &str,
+        interval_seconds: i64,
+    ) -> Result<ScheduledJob, UniDbError> {
+        let name = name.trim();
+        let sql = sql.trim();
+        if name.is_empty() || sql.is_empty() {
+            return Err(UniDbError::new(
+                "job_invalid",
+                ErrorCategory::Syntax,
+                "Job name and SQL statement are required",
+            ));
+        }
+        let interval = interval_seconds.max(1);
+        let now = Utc::now();
+        let next = now + chrono::Duration::seconds(interval);
+        let job = ScheduledJob {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            connection_id,
+            sql: sql.to_string(),
+            interval_seconds: interval,
+            enabled: true,
+            last_run_at: None,
+            next_run_at: next.to_rfc3339(),
+            last_status: None,
+            last_rows: None,
+            created_at: now.to_rfc3339(),
+        };
+        let store = self.require_store()?;
+        store.save_job(&job).await?;
+        self.audit_transfer(
+            "job_created",
+            Some(connection_id),
+            "success",
+            serde_json::json!({ "name": job.name, "interval_seconds": interval }),
+        )
+        .await?;
+        Ok(job)
+    }
+
+    pub async fn list_jobs(&self) -> Result<Vec<ScheduledJob>, UniDbError> {
+        self.require_store()?.list_jobs().await
+    }
+
+    pub async fn set_job_enabled(&self, id: Uuid, enabled: bool) -> Result<(), UniDbError> {
+        self.require_store()?.set_job_enabled(id, enabled).await
+    }
+
+    pub async fn delete_job(&self, id: Uuid) -> Result<bool, UniDbError> {
+        self.require_store()?.delete_job(id).await
+    }
+
+    /// Executes a scheduled job immediately and records its run timestamps and outcome.
+    pub async fn run_job_now(&self, id: Uuid) -> Result<ScheduledJob, UniDbError> {
+        let store = self.require_store()?;
+        let job = store.get_job(id).await?.ok_or_else(|| {
+            UniDbError::new("job_not_found", ErrorCategory::Internal, "Job not found")
+        })?;
+        let now = Utc::now();
+        let next = now + chrono::Duration::seconds(job.interval_seconds.max(1));
+        let now_str = now.to_rfc3339();
+        let next_str = next.to_rfc3339();
+
+        let (status, rows) = match self.execute(job.connection_id, &job.sql).await {
+            Ok(result) => {
+                let count = result
+                    .affected_rows
+                    .map(|n| n as i64)
+                    .unwrap_or(result.rows.len() as i64);
+                ("success".to_string(), Some(count))
+            }
+            Err(error) => (error.code().to_string(), None),
+        };
+        store
+            .update_job_run(job.id, &now_str, &next_str, &status, rows)
+            .await?;
+        self.audit_transfer(
+            "job_executed",
+            Some(job.connection_id),
+            if status == "success" {
+                "success"
+            } else {
+                "error"
+            },
+            serde_json::json!({ "name": job.name, "status": status, "rows": rows }),
+        )
+        .await?;
+        store
+            .get_job(job.id)
+            .await?
+            .ok_or_else(|| UniDbError::internal("Scheduled job disappeared after execution"))
+    }
+
+    /// Runs all enabled jobs whose `next_run_at` is due and whose connection is open.
+    pub async fn run_due_jobs(&self) -> Result<Vec<ScheduledJob>, UniDbError> {
+        let now_str = Utc::now().to_rfc3339();
+        let jobs = self.list_jobs().await?;
+        let open_ids: Vec<Uuid> = {
+            let guard = self.connections.lock().await;
+            guard.keys().copied().collect()
+        };
+        let mut ran = Vec::new();
+        for job in jobs {
+            if job.enabled
+                && job.next_run_at <= now_str
+                && open_ids.contains(&job.connection_id)
+                && let Ok(updated) = self.run_job_now(job.id).await
+            {
+                ran.push(updated);
+            }
+        }
+        Ok(ran)
+    }
+
+    /// Validates, encodes, and installs a WebAssembly plugin binary into the store.
+    pub async fn install_wasm_plugin(
+        &self,
+        name: &str,
+        wasm_bytes: &[u8],
+    ) -> Result<WasmPluginRecord, UniDbError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(UniDbError::new(
+                "plugin_name_empty",
+                ErrorCategory::Syntax,
+                "Plugin name is required",
+            ));
+        }
+        let module = WasmPluginModule::parse(wasm_bytes)?;
+        let exports = module.export_names();
+        let wasm_base64 = base64::engine::general_purpose::STANDARD.encode(wasm_bytes);
+        let record = WasmPluginRecord {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            exports,
+            wasm_base64,
+            installed_at: Utc::now().to_rfc3339(),
+        };
+        let store = self.require_store()?;
+        store.save_wasm_plugin(&record).await?;
+        self.audit_transfer(
+            "plugin_installed",
+            None,
+            "success",
+            serde_json::json!({ "name": record.name, "exports": record.exports }),
+        )
+        .await?;
+        Ok(record)
+    }
+
+    /// Installs the built in sample WASM plugin module (`add`, `score_bonus`).
+    pub async fn install_sample_wasm_plugin(&self) -> Result<WasmPluginRecord, UniDbError> {
+        let existing = self.list_wasm_plugins().await?;
+        if let Some(found) = existing.into_iter().find(|p| p.name == "sample-metrics") {
+            return Ok(found);
+        }
+        self.install_wasm_plugin("sample-metrics", &sample_metric_plugin_wasm())
+            .await
+    }
+
+    pub async fn list_wasm_plugins(&self) -> Result<Vec<WasmPluginRecord>, UniDbError> {
+        self.require_store()?.list_wasm_plugins().await
+    }
+
+    /// Runs an exported `i32` function in the fuel metered WASM sandbox.
+    pub async fn run_wasm_plugin(
+        &self,
+        id: Uuid,
+        export_name: &str,
+        args: &[i32],
+    ) -> Result<i32, UniDbError> {
+        let store = self.require_store()?;
+        let record = store.get_wasm_plugin(id).await?.ok_or_else(|| {
+            UniDbError::new(
+                "plugin_not_found",
+                ErrorCategory::Internal,
+                "Plugin not found",
+            )
+        })?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&record.wasm_base64)
+            .map_err(|error| {
+                UniDbError::internal("Could not decode stored WASM plugin").with_source(error)
+            })?;
+        let module = WasmPluginModule::parse(&bytes)?;
+        let output = module.call_i32(export_name, args, 10_000)?;
+        self.audit_transfer(
+            "plugin_executed",
+            None,
+            "success",
+            serde_json::json!({ "name": record.name, "export": export_name }),
+        )
+        .await?;
+        Ok(output)
+    }
+
+    pub async fn delete_wasm_plugin(&self, id: Uuid) -> Result<bool, UniDbError> {
+        self.require_store()?.delete_wasm_plugin(id).await
+    }
+
+    /// Enqueues a SQL change for offline first sync, with optional conflict guard SQL.
+    pub async fn queue_offline_operation(
+        &self,
+        connection_id: Uuid,
+        label: &str,
+        sql: &str,
+        guard_query: Option<String>,
+        expected_guard_value: Option<String>,
+    ) -> Result<SyncQueueItem, UniDbError> {
+        let label = label.trim();
+        let sql = sql.trim();
+        if label.is_empty() || sql.is_empty() {
+            return Err(UniDbError::new(
+                "sync_item_invalid",
+                ErrorCategory::Syntax,
+                "Label and SQL statement are required",
+            ));
+        }
+        let item = SyncQueueItem {
+            id: Uuid::new_v4(),
+            connection_id,
+            label: label.to_string(),
+            sql: sql.to_string(),
+            guard_query: guard_query.filter(|s| !s.trim().is_empty()),
+            expected_guard_value: expected_guard_value.filter(|s| !s.trim().is_empty()),
+            status: "pending".to_string(),
+            error_message: None,
+            created_at: Utc::now().to_rfc3339(),
+            synced_at: None,
+        };
+        let store = self.require_store()?;
+        store.enqueue_sync_item(&item).await?;
+        self.audit_transfer(
+            "offline_sync_queued",
+            Some(connection_id),
+            "success",
+            serde_json::json!({ "label": item.label }),
+        )
+        .await?;
+        Ok(item)
+    }
+
+    pub async fn list_sync_queue(
+        &self,
+        connection_id: Option<Uuid>,
+    ) -> Result<Vec<SyncQueueItem>, UniDbError> {
+        self.require_store()?.list_sync_items(connection_id).await
+    }
+
+    /// Replays pending offline operations for an open connection, detecting optimistic guard conflicts.
+    pub async fn flush_sync_queue(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<SyncFlushReport, UniDbError> {
+        let _ = self.connection_sender(connection_id).await?;
+        let store = self.require_store()?;
+        let items = store.list_sync_items(Some(connection_id)).await?;
+        let mut report = SyncFlushReport::default();
+
+        for item in items {
+            if item.status != "pending" {
+                continue;
+            }
+            if let (Some(guard_sql), Some(expected)) =
+                (&item.guard_query, &item.expected_guard_value)
+            {
+                let actual = self
+                    .execute(connection_id, guard_sql)
+                    .await
+                    .ok()
+                    .and_then(|res| res.rows.first().and_then(|r| r.first()).cloned())
+                    .map(|v| v.display_text());
+                if actual.as_deref() != Some(expected.as_str()) {
+                    let msg = format!(
+                        "Expected guard '{}', found '{}'",
+                        expected,
+                        actual.as_deref().unwrap_or("none")
+                    );
+                    store
+                        .update_sync_status(item.id, "conflict", Some(&msg), None)
+                        .await?;
+                    report.conflicts += 1;
+                    continue;
+                }
+            }
+            let stmts = unidb_core::split_statements(&item.sql);
+            if stmts.is_empty() {
+                let now = Utc::now().to_rfc3339();
+                store
+                    .update_sync_status(item.id, "synced", None, Some(&now))
+                    .await?;
+                report.synced += 1;
+                continue;
+            }
+            match self.apply_statements(connection_id, &stmts).await {
+                Ok(()) => {
+                    let now = Utc::now().to_rfc3339();
+                    store
+                        .update_sync_status(item.id, "synced", None, Some(&now))
+                        .await?;
+                    report.synced += 1;
+                }
+                Err(error) => {
+                    store
+                        .update_sync_status(item.id, "failed", Some(error.user_message()), None)
+                        .await?;
+                    report.failed += 1;
+                }
+            }
+        }
+
+        self.audit_transfer(
+            "offline_sync_flushed",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "synced": report.synced,
+                "conflicts": report.conflicts,
+                "failed": report.failed,
+            }),
+        )
+        .await?;
+        Ok(report)
+    }
+
+    pub async fn delete_sync_item(&self, id: Uuid) -> Result<bool, UniDbError> {
+        self.require_store()?.delete_sync_item(id).await
     }
 
     /// Generates deterministic fake rows and inserts them into a table.

@@ -5,4 +5,7 @@ pub mod secrets;
 pub mod store;
 
 pub use secrets::{KeyringKeyProvider, MasterKeyProvider, MemoryKeyProvider, SecretBox};
-pub use store::{AppliedMigration, AuditEntry, HistoryEntry, SavedQuery, Store, TableSnapshot};
+pub use store::{
+    AppliedMigration, AuditEntry, HistoryEntry, SavedQuery, ScheduledJob, Store, SyncQueueItem,
+    TableSnapshot, WasmPluginRecord,
+};

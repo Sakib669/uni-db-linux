@@ -361,3 +361,82 @@ async fn table_snapshots_round_trip_and_can_be_deleted() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn platform_tables_round_trip_jobs_sync_and_plugins() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("unidb.db");
+    let provider = test_provider();
+    let store = Store::open(&path, &provider).await.expect("open store");
+
+    let conn_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let job = unidb_store::ScheduledJob {
+        id: uuid::Uuid::new_v4(),
+        name: "Daily cleanup".to_string(),
+        connection_id: conn_id,
+        sql: "DELETE FROM temp_rows;".to_string(),
+        interval_seconds: 60,
+        enabled: true,
+        last_run_at: None,
+        next_run_at: now.clone(),
+        last_status: None,
+        last_rows: None,
+        created_at: now.clone(),
+    };
+    store.save_job(&job).await.expect("save job");
+    assert_eq!(store.list_jobs().await.expect("list").len(), 1);
+    store.set_job_enabled(job.id, false).await.expect("disable");
+    assert!(
+        !store
+            .get_job(job.id)
+            .await
+            .expect("get")
+            .expect("some")
+            .enabled
+    );
+    store
+        .update_job_run(job.id, &now, &now, "success", Some(3))
+        .await
+        .expect("update run");
+    assert!(store.delete_job(job.id).await.expect("delete"));
+
+    let sync_item = unidb_store::SyncQueueItem {
+        id: uuid::Uuid::new_v4(),
+        connection_id: conn_id,
+        label: "Seed row".to_string(),
+        sql: "INSERT INTO users (name) VALUES ('Offline');".to_string(),
+        guard_query: Some("SELECT count(*) FROM users;".to_string()),
+        expected_guard_value: Some("1".to_string()),
+        status: "pending".to_string(),
+        error_message: None,
+        created_at: now.clone(),
+        synced_at: None,
+    };
+    store.enqueue_sync_item(&sync_item).await.expect("enqueue");
+    assert_eq!(
+        store
+            .list_sync_items(Some(conn_id))
+            .await
+            .expect("list")
+            .len(),
+        1
+    );
+    store
+        .update_sync_status(sync_item.id, "synced", None, Some(&now))
+        .await
+        .expect("update status");
+    assert!(store.delete_sync_item(sync_item.id).await.expect("delete"));
+
+    let plugin = unidb_store::WasmPluginRecord {
+        id: uuid::Uuid::new_v4(),
+        name: "metrics".to_string(),
+        exports: vec!["add".to_string()],
+        wasm_base64: "AGFzbQEAAAA=".to_string(),
+        installed_at: now,
+    };
+    store.save_wasm_plugin(&plugin).await.expect("save plugin");
+    assert_eq!(store.list_wasm_plugins().await.expect("list").len(), 1);
+    assert!(store.delete_wasm_plugin(plugin.id).await.expect("delete"));
+}

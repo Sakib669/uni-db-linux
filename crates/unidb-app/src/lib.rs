@@ -18,12 +18,16 @@ pub use paths::default_data_dir;
 pub use security::{CheckStatus, SecurityCheck, SecurityReport};
 pub use service::{
     AppService, BundleImportReport, BundlePreview, ExportReport, ImportOptions, ImportReport,
+    SyncFlushReport,
 };
 pub use unidb_core::{
-    BundleVerification, ForeignKeyInfo, MultiTargetSummary, ResultDiff, TeamBundle,
+    BundleVerification, FindingSeverity, ForeignKeyInfo, MultiTargetSummary, ResultDiff,
+    SchemaFinding, SchemaHealthReport, TeamBundle,
 };
 pub use unidb_store::AuditEntry;
-pub use unidb_store::{HistoryEntry, SavedQuery, TableSnapshot};
+pub use unidb_store::{
+    HistoryEntry, SavedQuery, ScheduledJob, SyncQueueItem, TableSnapshot, WasmPluginRecord,
+};
 pub use update::{ReleaseInfo, fetch_latest, is_newer, parse_release};
 
 /// Grid and status text for a value, kept here so the interface never formats

@@ -81,9 +81,9 @@ sleep 0.6
 xdotool key End
 sleep 0.2
 xdotool key Return
-sleep 0.4
-xdotool mousemove $((X + 580)) $((Y + 361))
-sleep 0.2
+sleep 0.9
+xdotool mousemove $((X + 600)) $((Y + 361))
+sleep 0.3
 xdotool click 1
 sleep 0.4
 xdotool type --delay 30 "/tmp/unidb-demo.db"
@@ -399,4 +399,87 @@ sleep 0.3
 xdotool click 1
 sleep 1
 import -window root /app/target/security-page.png
+
+# Platform page is the twelfth sidebar row.
+xdotool mousemove $((X + 100)) $((Y + 485))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+import -window root /app/target/platform-page.png
+
+# 1. Run Schema Doctor on Demo SQLite (live).
+xdotool mousemove $((X + 560)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+import -window root /app/target/platform-doctor.png
+
+# 2. Switch to Scheduled Jobs, create a job, and run it immediately.
+xdotool mousemove $((X + 625)) $((Y + 82))
+sleep 0.4
+xdotool click 1
+sleep 1.0
+xdotool mousemove $((X + 528)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 20 "Users Audit"
+sleep 0.2
+xdotool mousemove $((X + 656)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 20 "SELECT count(*) FROM users"
+sleep 0.2
+xdotool mousemove $((X + 905)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+xdotool mousemove $((X + 968)) $((Y + 222))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+import -window root /app/target/platform-jobs.png
+
+# 3. Switch to WASM Plugins, install the sample module, and execute 'add'.
+xdotool mousemove $((X + 775)) $((Y + 82))
+sleep 0.4
+xdotool click 1
+sleep 1.0
+xdotool mousemove $((X + 360)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+xdotool mousemove $((X + 782)) $((Y + 222))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+import -window root /app/target/platform-plugins.png
+
+# 4. Switch to Offline Sync, queue a mutation, and flush it.
+xdotool mousemove $((X + 890)) $((Y + 82))
+sleep 0.4
+xdotool click 1
+sleep 1.0
+xdotool mousemove $((X + 620)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 20 "Sync Demo Row"
+sleep 0.2
+xdotool mousemove $((X + 940)) $((Y + 130))
+sleep 0.3
+xdotool click 1
+sleep 0.3
+xdotool type --delay 20 "INSERT INTO users (name) VALUES ('Ada Offline')"
+sleep 0.2
+xdotool mousemove $((X + 690)) $((Y + 170))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+xdotool mousemove $((X + 825)) $((Y + 170))
+sleep 0.3
+xdotool click 1
+sleep 1.5
+import -window root /app/target/platform-sync.png
 echo "screenshots written"

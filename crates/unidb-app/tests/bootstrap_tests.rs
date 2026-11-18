@@ -898,3 +898,219 @@ async fn team_bundles_export_verify_and_import_without_secrets() {
     );
     service_b.shutdown().await;
 }
+
+#[tokio::test]
+async fn schema_doctor_diagnoses_live_sqlite_tables() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    let db_path = dir.path().join("doctor.db");
+    let profile =
+        ConnectionProfile::new("Doctor", Engine::SQLite, "", db_path.to_str().expect("p"));
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+
+    service
+        .execute(
+            profile.id,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE events (user_id INTEGER REFERENCES users(id), kind TEXT);
+             CREATE TABLE logs (msg TEXT);",
+        )
+        .await
+        .expect("create tables");
+
+    let report = service
+        .diagnose_connection_schema(profile.id, "main")
+        .await
+        .expect("diagnose");
+    assert_eq!(report.tables_scanned, 3);
+    assert!(report.score < 100);
+    assert!(report.warnings >= 2);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.table == "events" && f.column.as_deref() == Some("user_id"))
+    );
+
+    let audit = service.recent_audit(10).await.expect("audit");
+    assert!(audit.iter().any(|e| e.action == "schema_doctor_run"));
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn scheduled_jobs_create_run_and_sweep() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    let db_path = dir.path().join("jobs.db");
+    let profile = ConnectionProfile::new("Jobs", Engine::SQLite, "", db_path.to_str().expect("p"));
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+
+    service
+        .execute(profile.id, "CREATE TABLE ticks (n INTEGER);")
+        .await
+        .expect("create table");
+
+    let job = service
+        .create_job("Heartbeat", profile.id, "INSERT INTO ticks VALUES (1);", 60)
+        .await
+        .expect("create job");
+    assert!(job.enabled);
+
+    let updated = service.run_job_now(job.id).await.expect("run_job_now");
+    assert_eq!(updated.last_status.as_deref(), Some("success"));
+    assert_eq!(updated.last_rows, Some(1));
+
+    let count = service
+        .execute(profile.id, "SELECT count(*) FROM ticks;")
+        .await
+        .expect("count");
+    assert_eq!(count.rows[0][0], unidb_core::Value::Int(1));
+
+    service
+        .set_job_enabled(job.id, false)
+        .await
+        .expect("disable");
+    assert!(service.run_due_jobs().await.expect("sweep").is_empty());
+
+    assert!(service.delete_job(job.id).await.expect("delete"));
+    assert!(service.list_jobs().await.expect("list").is_empty());
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn wasm_plugins_install_execute_and_audit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    let record = service
+        .install_sample_wasm_plugin()
+        .await
+        .expect("install sample");
+    assert_eq!(record.name, "sample-metrics");
+    assert!(record.exports.contains(&"add".to_string()));
+
+    let sum = service
+        .run_wasm_plugin(record.id, "add", &[12, 30])
+        .await
+        .expect("run add");
+    assert_eq!(sum, 42);
+
+    let bonus = service
+        .run_wasm_plugin(record.id, "score_bonus", &[5])
+        .await
+        .expect("run score_bonus");
+    assert_eq!(bonus, 20);
+
+    let audit = service.recent_audit(10).await.expect("audit");
+    assert!(audit.iter().any(|e| e.action == "plugin_installed"));
+    assert!(audit.iter().any(|e| e.action == "plugin_executed"));
+
+    assert!(service.delete_wasm_plugin(record.id).await.expect("delete"));
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn offline_sync_queues_detects_conflicts_and_flushes() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+
+    let db_path = dir.path().join("sync.db");
+    let profile = ConnectionProfile::new("Sync", Engine::SQLite, "", db_path.to_str().expect("p"));
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+    service
+        .execute(
+            profile.id,
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO items VALUES (1, 'one');",
+        )
+        .await
+        .expect("seed");
+    service
+        .close_connection(profile.id)
+        .await
+        .expect("disconnect");
+
+    // Draft offline operations while disconnected.
+    let item_ok = service
+        .queue_offline_operation(
+            profile.id,
+            "Add item 2",
+            "INSERT INTO items VALUES (2, 'two');",
+            Some("SELECT count(*) FROM items;".to_string()),
+            Some("1".to_string()),
+        )
+        .await
+        .expect("queue ok");
+
+    let item_conflict = service
+        .queue_offline_operation(
+            profile.id,
+            "Stale count write",
+            "INSERT INTO items VALUES (99, 'conflict');",
+            Some("SELECT count(*) FROM items;".to_string()),
+            Some("999".to_string()),
+        )
+        .await
+        .expect("queue conflict");
+
+    assert_eq!(
+        service
+            .list_sync_queue(Some(profile.id))
+            .await
+            .expect("list")
+            .len(),
+        2
+    );
+
+    // Reconnect and flush.
+    service.open_connection(&profile).await.expect("reconnect");
+    let report = service.flush_sync_queue(profile.id).await.expect("flush");
+    assert_eq!(report.synced, 1);
+    assert_eq!(report.conflicts, 1);
+    assert_eq!(report.failed, 0);
+
+    let rows = service
+        .execute(profile.id, "SELECT count(*) FROM items;")
+        .await
+        .expect("verify");
+    assert_eq!(rows.rows[0][0], unidb_core::Value::Int(2));
+
+    let items_after = service
+        .list_sync_queue(Some(profile.id))
+        .await
+        .expect("list");
+    assert_eq!(
+        items_after
+            .iter()
+            .find(|i| i.id == item_ok.id)
+            .expect("ok")
+            .status,
+        "synced"
+    );
+    assert_eq!(
+        items_after
+            .iter()
+            .find(|i| i.id == item_conflict.id)
+            .expect("cf")
+            .status,
+        "conflict"
+    );
+
+    let audit = service.recent_audit(10).await.expect("audit");
+    assert!(audit.iter().any(|e| e.action == "offline_sync_flushed"));
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}

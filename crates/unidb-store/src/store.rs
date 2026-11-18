@@ -81,6 +81,47 @@ impl TableSnapshot {
     }
 }
 
+/// Recurring SQL job scheduled for a connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledJob {
+    pub id: Uuid,
+    pub name: String,
+    pub connection_id: Uuid,
+    pub sql: String,
+    pub interval_seconds: i64,
+    pub enabled: bool,
+    pub last_run_at: Option<String>,
+    pub next_run_at: String,
+    pub last_status: Option<String>,
+    pub last_rows: Option<i64>,
+    pub created_at: String,
+}
+
+/// Queued SQL operation drafted for offline first sync.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncQueueItem {
+    pub id: Uuid,
+    pub connection_id: Uuid,
+    pub label: String,
+    pub sql: String,
+    pub guard_query: Option<String>,
+    pub expected_guard_value: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub synced_at: Option<String>,
+}
+
+/// Installed sandboxed WebAssembly plugin record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WasmPluginRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub exports: Vec<String>,
+    pub wasm_base64: String,
+    pub installed_at: String,
+}
+
 /// Saved query row, returned by `list_saved_queries`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedQuery {
@@ -782,6 +823,260 @@ impl Store {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Saves a scheduled job.
+    pub async fn save_job(&self, job: &ScheduledJob) -> Result<(), UniDbError> {
+        sqlx::query(
+            "INSERT INTO scheduled_jobs (id, name, connection_id, sql_text, interval_seconds, enabled, last_run_at, next_run_at, last_status, last_rows, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(job.id.to_string())
+        .bind(&job.name)
+        .bind(job.connection_id.to_string())
+        .bind(&job.sql)
+        .bind(job.interval_seconds)
+        .bind(i64::from(job.enabled))
+        .bind(&job.last_run_at)
+        .bind(&job.next_run_at)
+        .bind(&job.last_status)
+        .bind(job.last_rows)
+        .bind(&job.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not save scheduled job").with_source(error))?;
+        Ok(())
+    }
+
+    /// Lists all scheduled jobs ordered newest first.
+    pub async fn list_jobs(&self) -> Result<Vec<ScheduledJob>, UniDbError> {
+        let rows = sqlx::query(
+            "SELECT id, name, connection_id, sql_text, interval_seconds, enabled, last_run_at, next_run_at, last_status, last_rows, created_at
+             FROM scheduled_jobs ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not list scheduled jobs").with_source(error))?;
+        rows.into_iter()
+            .map(row_to_job)
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|error| {
+                UniDbError::internal("Could not decode scheduled job").with_source(error)
+            })
+    }
+
+    /// Fetches one scheduled job by id.
+    pub async fn get_job(&self, id: Uuid) -> Result<Option<ScheduledJob>, UniDbError> {
+        let row = sqlx::query(
+            "SELECT id, name, connection_id, sql_text, interval_seconds, enabled, last_run_at, next_run_at, last_status, last_rows, created_at
+             FROM scheduled_jobs WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not load scheduled job").with_source(error))?;
+        row.map(row_to_job).transpose().map_err(|error| {
+            UniDbError::internal("Could not decode scheduled job").with_source(error)
+        })
+    }
+
+    /// Updates enabled state on a scheduled job.
+    pub async fn set_job_enabled(&self, id: Uuid, enabled: bool) -> Result<(), UniDbError> {
+        sqlx::query("UPDATE scheduled_jobs SET enabled = ? WHERE id = ?")
+            .bind(i64::from(enabled))
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| UniDbError::internal("Could not update job").with_source(error))?;
+        Ok(())
+    }
+
+    /// Records the result of one scheduled job execution.
+    pub async fn update_job_run(
+        &self,
+        id: Uuid,
+        last_run_at: &str,
+        next_run_at: &str,
+        last_status: &str,
+        last_rows: Option<i64>,
+    ) -> Result<(), UniDbError> {
+        sqlx::query(
+            "UPDATE scheduled_jobs SET last_run_at = ?, next_run_at = ?, last_status = ?, last_rows = ? WHERE id = ?",
+        )
+        .bind(last_run_at)
+        .bind(next_run_at)
+        .bind(last_status)
+        .bind(last_rows)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not update job run state").with_source(error))?;
+        Ok(())
+    }
+
+    /// Deletes one scheduled job.
+    pub async fn delete_job(&self, id: Uuid) -> Result<bool, UniDbError> {
+        let res = sqlx::query("DELETE FROM scheduled_jobs WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| UniDbError::internal("Could not delete job").with_source(error))?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Enqueues an offline operation into `sync_queue`.
+    pub async fn enqueue_sync_item(&self, item: &SyncQueueItem) -> Result<(), UniDbError> {
+        sqlx::query(
+            "INSERT INTO sync_queue (id, connection_id, label, sql_text, guard_query, expected_guard_value, status, error_message, created_at, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(item.id.to_string())
+        .bind(item.connection_id.to_string())
+        .bind(&item.label)
+        .bind(&item.sql)
+        .bind(&item.guard_query)
+        .bind(&item.expected_guard_value)
+        .bind(&item.status)
+        .bind(&item.error_message)
+        .bind(&item.created_at)
+        .bind(&item.synced_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not enqueue offline sync item").with_source(error))?;
+        Ok(())
+    }
+
+    /// Lists offline sync items ordered oldest first (FIFO).
+    pub async fn list_sync_items(
+        &self,
+        connection_id: Option<Uuid>,
+    ) -> Result<Vec<SyncQueueItem>, UniDbError> {
+        let rows = match connection_id {
+            Some(id) => {
+                sqlx::query(
+                    "SELECT id, connection_id, label, sql_text, guard_query, expected_guard_value, status, error_message, created_at, synced_at
+                     FROM sync_queue WHERE connection_id = ? ORDER BY created_at ASC",
+                )
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query(
+                    "SELECT id, connection_id, label, sql_text, guard_query, expected_guard_value, status, error_message, created_at, synced_at
+                     FROM sync_queue ORDER BY created_at ASC",
+                )
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
+        .map_err(|error| UniDbError::internal("Could not list sync queue").with_source(error))?;
+
+        rows.into_iter()
+            .map(row_to_sync_item)
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|error| {
+                UniDbError::internal("Could not decode sync queue item").with_source(error)
+            })
+    }
+
+    /// Updates status of one offline sync queue item.
+    pub async fn update_sync_status(
+        &self,
+        id: Uuid,
+        status: &str,
+        error_message: Option<&str>,
+        synced_at: Option<&str>,
+    ) -> Result<(), UniDbError> {
+        sqlx::query(
+            "UPDATE sync_queue SET status = ?, error_message = ?, synced_at = ? WHERE id = ?",
+        )
+        .bind(status)
+        .bind(error_message)
+        .bind(synced_at)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not update sync status").with_source(error))?;
+        Ok(())
+    }
+
+    /// Deletes one item from `sync_queue`.
+    pub async fn delete_sync_item(&self, id: Uuid) -> Result<bool, UniDbError> {
+        let res = sqlx::query("DELETE FROM sync_queue WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not delete sync item").with_source(error)
+            })?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Saves or replaces an installed WASM plugin record.
+    pub async fn save_wasm_plugin(&self, plugin: &WasmPluginRecord) -> Result<(), UniDbError> {
+        let exports_json = serde_json::to_string(&plugin.exports).map_err(|error| {
+            UniDbError::internal("Could not encode plugin exports").with_source(error)
+        })?;
+        sqlx::query(
+            "INSERT INTO wasm_plugins (id, name, exports_json, wasm_base64, installed_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(plugin.id.to_string())
+        .bind(&plugin.name)
+        .bind(exports_json)
+        .bind(&plugin.wasm_base64)
+        .bind(&plugin.installed_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not save WASM plugin").with_source(error))?;
+        Ok(())
+    }
+
+    /// Lists installed WASM plugins newest first.
+    pub async fn list_wasm_plugins(&self) -> Result<Vec<WasmPluginRecord>, UniDbError> {
+        let rows = sqlx::query(
+            "SELECT id, name, exports_json, wasm_base64, installed_at
+             FROM wasm_plugins ORDER BY installed_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| UniDbError::internal("Could not list WASM plugins").with_source(error))?;
+        rows.into_iter()
+            .map(|row| {
+                let id_str: String = row.try_get("id")?;
+                let exports_json: String = row.try_get("exports_json")?;
+                let exports: Vec<String> = serde_json::from_str(&exports_json).unwrap_or_default();
+                Ok(WasmPluginRecord {
+                    id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
+                    name: row.try_get("name")?,
+                    exports,
+                    wasm_base64: row.try_get("wasm_base64")?,
+                    installed_at: row.try_get("installed_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|error| {
+                UniDbError::internal("Could not decode WASM plugin").with_source(error)
+            })
+    }
+
+    /// Fetches one installed WASM plugin by id.
+    pub async fn get_wasm_plugin(&self, id: Uuid) -> Result<Option<WasmPluginRecord>, UniDbError> {
+        let list = self.list_wasm_plugins().await?;
+        Ok(list.into_iter().find(|p| p.id == id))
+    }
+
+    /// Deletes an installed WASM plugin.
+    pub async fn delete_wasm_plugin(&self, id: Uuid) -> Result<bool, UniDbError> {
+        let res = sqlx::query("DELETE FROM wasm_plugins WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| {
+                UniDbError::internal("Could not delete WASM plugin").with_source(error)
+            })?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Deletes one saved query and returns how many rows went away.
     pub async fn delete_saved_query(&self, id: Uuid) -> Result<u64, UniDbError> {
         let result = sqlx::query("DELETE FROM saved_queries WHERE id = ?")
@@ -1103,6 +1398,42 @@ fn ssl_from_db(value: &str) -> Result<SslMode, UniDbError> {
             "The saved connection uses an unknown TLS mode: {other}"
         ))),
     }
+}
+
+fn row_to_job(row: SqliteRow) -> Result<ScheduledJob, sqlx::Error> {
+    let id_str: String = row.try_get("id")?;
+    let conn_str: String = row.try_get("connection_id")?;
+    let enabled: i64 = row.try_get("enabled")?;
+    Ok(ScheduledJob {
+        id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
+        name: row.try_get("name")?,
+        connection_id: Uuid::parse_str(&conn_str).unwrap_or_else(|_| Uuid::nil()),
+        sql: row.try_get("sql_text")?,
+        interval_seconds: row.try_get("interval_seconds")?,
+        enabled: enabled != 0,
+        last_run_at: row.try_get("last_run_at")?,
+        next_run_at: row.try_get("next_run_at")?,
+        last_status: row.try_get("last_status")?,
+        last_rows: row.try_get("last_rows")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+fn row_to_sync_item(row: SqliteRow) -> Result<SyncQueueItem, sqlx::Error> {
+    let id_str: String = row.try_get("id")?;
+    let conn_str: String = row.try_get("connection_id")?;
+    Ok(SyncQueueItem {
+        id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
+        connection_id: Uuid::parse_str(&conn_str).unwrap_or_else(|_| Uuid::nil()),
+        label: row.try_get("label")?,
+        sql: row.try_get("sql_text")?,
+        guard_query: row.try_get("guard_query")?,
+        expected_guard_value: row.try_get("expected_guard_value")?,
+        status: row.try_get("status")?,
+        error_message: row.try_get("error_message")?,
+        created_at: row.try_get("created_at")?,
+        synced_at: row.try_get("synced_at")?,
+    })
 }
 
 #[cfg(test)]
