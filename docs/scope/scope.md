@@ -17,6 +17,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 | 9 | History, saved queries, and settings | in-progress | [0009](../specs/0009-history-saved-queries-settings.md) |
 | 10 | Packaging, signing, updates, and release automation | in-progress | [0010](../specs/0010-packaging-updates.md) |
 | 11 | Visual features | in-progress | [0011](../specs/0011-visual-features.md) |
+| 12 | Workflow features | in-progress | [0015](../specs/0015-fake-data.md) |
 
 ## Features
 
@@ -210,6 +211,22 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
 - [ ] Follow up: interactive ERD (drag, zoom, click to open), dashboard with saved charts, builder joins and aggregates, cross connection data compare, chart export
 - [ ] Verify it: /check verify Visual features
 - [ ] Test it: /test Visual features
+
+### 12. Workflow features
+
+**Intent**: Work in progress. The first slice is deterministic fake data generation from the Transfer page, inserted through the transactional path with audit. Migrations and git, time travel and archive, masking, multi database query, and team bundles remain with their decisions recorded as follow ups.
+
+**Done when**: the workflow set is complete. For the current slice, a user can fill a table with reproducible generated rows and see the report.
+
+- [ ] Decide all workflow features. First slice: [0015](../specs/0015-fake-data.md)
+- [ ] Build it: /develop Workflow features
+  - [x] Fake data: type aware deterministic generator, skipped integer keys, transactional insert, audit, Transfer controls, and container screenshot
+  - [ ] Migrations and git integration
+  - [ ] Time travel and archive
+  - [ ] Masking of existing data and exports
+  - [ ] Multi database query and team bundles
+- [ ] Verify it: /check verify Workflow features
+- [ ] Test it: /test Workflow features
 
 ## Deferred
 
