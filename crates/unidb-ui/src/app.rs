@@ -19,9 +19,10 @@ use unidb_app::{
     SavedQuery, SecurityReport,
 };
 use unidb_core::{
-    ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, QueryResult,
-    QueryResult as ResultSet, SqlDialect, SslMode, TableColumnInfo, TableDesign, TransferFormat,
-    alter_table_sql, chart_series, create_table_sql, diff_results, erd_layout, explain_statement,
+    ChartPoint, ColumnDesign, ConnectionProfile, Engine, ErdLayout, ErdTable, ErrorCategory,
+    FilterOp, QueryBuilder, QueryFilter, QueryResult, QueryResult as ResultSet, SqlDialect,
+    SslMode, TableColumnInfo, TableDesign, TransferFormat, UniDbError, alter_table_sql,
+    build_query, chart_series, create_table_sql, diff_results, erd_layout, explain_statement,
 };
 
 const ABOUT_NAME: &str = "UniDB";
@@ -166,6 +167,27 @@ struct AppModel {
     schema_ids: Vec<Uuid>,
     schema_connection: Option<Uuid>,
     schema_database: String,
+    builder_stack: gtk::Stack,
+    builder_conn_dropdown: gtk::DropDown,
+    builder_table_dropdown: gtk::DropDown,
+    builder_columns_box: gtk::Box,
+    builder_filters_box: gtk::Box,
+    builder_filter_column: gtk::DropDown,
+    builder_filter_op: gtk::DropDown,
+    builder_filter_value: gtk::Entry,
+    builder_order_dropdown: gtk::DropDown,
+    builder_order_asc: gtk::Switch,
+    builder_limit_spin: gtk::SpinButton,
+    builder_preview_buffer: sourceview5::Buffer,
+    builder_status: gtk::Label,
+    builder_ids: Vec<Uuid>,
+    builder_connection: Option<Uuid>,
+    builder_database: String,
+    builder_tables: Vec<String>,
+    builder_columns: Vec<String>,
+    builder_selected: Vec<String>,
+    builder_filters: Vec<QueryFilter>,
+    builder_table: Option<String>,
 }
 
 enum AppMsg {
@@ -251,6 +273,16 @@ enum AppMsg {
     SchemaConnectionSelected(u32),
     SchemaLoaded(Box<Vec<ErdTable>>),
     SchemaFailed(String),
+    BuilderConnectionSelected(u32),
+    BuilderTables(Box<Vec<String>>),
+    BuilderTableSelected(u32),
+    BuilderDescribed(Box<Vec<TableColumnInfo>>),
+    BuilderToggleColumn(String, bool),
+    BuilderAddFilter,
+    BuilderRemoveFilter(usize),
+    BuilderPreview,
+    BuilderOpenInEditor,
+    BuilderFailed(String),
 }
 
 impl std::fmt::Debug for AppMsg {
@@ -338,6 +370,16 @@ impl std::fmt::Debug for AppMsg {
             Self::SchemaConnectionSelected(_) => "SchemaConnectionSelected",
             Self::SchemaLoaded(_) => "SchemaLoaded",
             Self::SchemaFailed(_) => "SchemaFailed",
+            Self::BuilderConnectionSelected(_) => "BuilderConnectionSelected",
+            Self::BuilderTables(_) => "BuilderTables",
+            Self::BuilderTableSelected(_) => "BuilderTableSelected",
+            Self::BuilderDescribed(_) => "BuilderDescribed",
+            Self::BuilderToggleColumn(_, _) => "BuilderToggleColumn",
+            Self::BuilderAddFilter => "BuilderAddFilter",
+            Self::BuilderRemoveFilter(_) => "BuilderRemoveFilter",
+            Self::BuilderPreview => "BuilderPreview",
+            Self::BuilderOpenInEditor => "BuilderOpenInEditor",
+            Self::BuilderFailed(_) => "BuilderFailed",
         })
     }
 }
@@ -416,6 +458,19 @@ struct ShellWidgets {
     schema_status: gtk::Label,
     schema_canvas: gtk::DrawingArea,
     schema_tables: Rc<RefCell<Vec<ErdTable>>>,
+    builder_stack: gtk::Stack,
+    builder_conn_dropdown: gtk::DropDown,
+    builder_table_dropdown: gtk::DropDown,
+    builder_columns_box: gtk::Box,
+    builder_filters_box: gtk::Box,
+    builder_filter_column: gtk::DropDown,
+    builder_filter_op: gtk::DropDown,
+    builder_filter_value: gtk::Entry,
+    builder_order_dropdown: gtk::DropDown,
+    builder_order_asc: gtk::Switch,
+    builder_limit_spin: gtk::SpinButton,
+    builder_preview_buffer: sourceview5::Buffer,
+    builder_status: gtk::Label,
 }
 
 #[relm4::component]
@@ -561,6 +616,27 @@ impl SimpleComponent for AppModel {
             schema_ids: Vec::new(),
             schema_connection: None,
             schema_database: "main".to_string(),
+            builder_stack: widgets.builder_stack,
+            builder_conn_dropdown: widgets.builder_conn_dropdown,
+            builder_table_dropdown: widgets.builder_table_dropdown,
+            builder_columns_box: widgets.builder_columns_box,
+            builder_filters_box: widgets.builder_filters_box,
+            builder_filter_column: widgets.builder_filter_column,
+            builder_filter_op: widgets.builder_filter_op,
+            builder_filter_value: widgets.builder_filter_value,
+            builder_order_dropdown: widgets.builder_order_dropdown,
+            builder_order_asc: widgets.builder_order_asc,
+            builder_limit_spin: widgets.builder_limit_spin,
+            builder_preview_buffer: widgets.builder_preview_buffer,
+            builder_status: widgets.builder_status,
+            builder_ids: Vec::new(),
+            builder_connection: None,
+            builder_database: "main".to_string(),
+            builder_tables: Vec::new(),
+            builder_columns: Vec::new(),
+            builder_selected: Vec::new(),
+            builder_filters: Vec::new(),
+            builder_table: None,
         };
 
         if let Some(error) = &model.error {
@@ -600,7 +676,10 @@ impl SimpleComponent for AppModel {
                 if index == 7 {
                     self.refresh_schema(&sender);
                 }
-                if index == 8 && !self.security_loaded {
+                if index == 8 {
+                    self.refresh_builder(&sender);
+                }
+                if index == 9 && !self.security_loaded {
                     self.load_security(&sender);
                 }
             }
@@ -841,6 +920,7 @@ impl SimpleComponent for AppModel {
                 self.refresh_designer(&sender);
                 self.refresh_transfer(&sender);
                 self.refresh_schema(&sender);
+                self.refresh_builder(&sender);
             }
             AppMsg::ConnectionFailed(message) => {
                 self.busy = false;
@@ -1610,6 +1690,128 @@ impl SimpleComponent for AppModel {
                 self.schema_status.set_label(&message);
                 self.show_toast(&message);
             }
+            AppMsg::BuilderConnectionSelected(index) => {
+                if let Some(id) = self.builder_ids.get(index as usize).copied() {
+                    self.builder_connection = Some(id);
+                    self.builder_database = self.designer_database_for(id);
+                    self.load_builder_tables(&sender);
+                }
+            }
+            AppMsg::BuilderTables(tables) => {
+                self.builder_tables = *tables;
+                let refs: Vec<&str> = self.builder_tables.iter().map(String::as_str).collect();
+                self.builder_table_dropdown
+                    .set_model(Some(&gtk::StringList::new(&refs)));
+                self.builder_table_dropdown.set_selected(0);
+            }
+            AppMsg::BuilderTableSelected(index) => {
+                let Some(table) = self.builder_tables.get(index as usize).cloned() else {
+                    return;
+                };
+                let Some(id) = self.builder_connection else {
+                    return;
+                };
+                let Some(service) = &self.service else {
+                    return;
+                };
+                let service = Arc::clone(service);
+                let sender = sender.clone();
+                let database = self.builder_database.clone();
+                self.handle.spawn(async move {
+                    match service.describe_table(id, &database, &table).await {
+                        Ok(columns) => sender.input(AppMsg::BuilderDescribed(Box::new(columns))),
+                        Err(error) => sender.input(AppMsg::BuilderFailed(format!(
+                            "Could not read the columns: {}",
+                            error.user_message()
+                        ))),
+                    }
+                });
+            }
+            AppMsg::BuilderDescribed(columns) => {
+                self.builder_columns = columns.iter().map(|column| column.name.clone()).collect();
+                self.builder_selected = self.builder_columns.clone();
+                self.builder_filters.clear();
+                let column_refs: Vec<&str> =
+                    self.builder_columns.iter().map(String::as_str).collect();
+                self.builder_filter_column
+                    .set_model(Some(&gtk::StringList::new(&column_refs)));
+                self.builder_order_dropdown
+                    .set_model(Some(&gtk::StringList::new(&column_refs)));
+                self.builder_filter_column.set_selected(0);
+                self.builder_order_dropdown.set_selected(0);
+                self.rebuild_builder_columns(&sender);
+                self.populate_builder_filters(&sender);
+                self.builder_status.set_label(&format!(
+                    "{} column{} available.",
+                    self.builder_columns.len(),
+                    plural(self.builder_columns.len())
+                ));
+            }
+            AppMsg::BuilderToggleColumn(name, active) => {
+                if active {
+                    if !self.builder_selected.contains(&name) {
+                        self.builder_selected.push(name);
+                        self.builder_selected.sort_by_key(|column| {
+                            self.builder_columns.iter().position(|item| item == column)
+                        });
+                    }
+                } else {
+                    self.builder_selected.retain(|column| *column != name);
+                }
+            }
+            AppMsg::BuilderAddFilter => {
+                let column = self
+                    .builder_columns
+                    .get(self.builder_filter_column.selected() as usize)
+                    .cloned();
+                let Some(column) = column else {
+                    return;
+                };
+                let operator = FilterOp::ALL
+                    .get(self.builder_filter_op.selected() as usize)
+                    .copied()
+                    .unwrap_or(FilterOp::Equals);
+                let value = self.builder_filter_value.text().to_string();
+                self.builder_filters.push(QueryFilter {
+                    column,
+                    operator,
+                    value,
+                });
+                self.builder_filter_value.set_text("");
+                self.populate_builder_filters(&sender);
+            }
+            AppMsg::BuilderRemoveFilter(index) => {
+                if index < self.builder_filters.len() {
+                    self.builder_filters.remove(index);
+                    self.populate_builder_filters(&sender);
+                }
+            }
+            AppMsg::BuilderPreview => match self.preview_builder() {
+                Ok(sql) => {
+                    self.builder_preview_buffer.set_text(&sql);
+                    self.builder_status.set_label("Preview ready.");
+                }
+                Err(error) => {
+                    self.builder_status.set_label(error.user_message());
+                    self.show_toast(error.user_message());
+                }
+            },
+            AppMsg::BuilderOpenInEditor => match self.preview_builder() {
+                Ok(sql) => {
+                    let buffer = self.editor_view.buffer();
+                    buffer.set_text(&sql);
+                    self.select_section(2);
+                    self.show_toast("Query loaded into the editor.");
+                }
+                Err(error) => {
+                    self.builder_status.set_label(error.user_message());
+                    self.show_toast(error.user_message());
+                }
+            },
+            AppMsg::BuilderFailed(message) => {
+                self.builder_status.set_label(&message);
+                self.show_toast(&message);
+            }
             AppMsg::ExportReady(connection_id, format, path, sql) => {
                 let Some(service) = &self.service else {
                     return;
@@ -1658,6 +1860,7 @@ impl AppModel {
             5 => ("history", "History"),
             6 => ("settings", "Settings"),
             7 => ("schema", "Schema"),
+            8 => ("builder", "Builder"),
             _ => ("security", "Security"),
         };
         self.page_stack.set_visible_child_name(name);
@@ -2639,6 +2842,163 @@ impl AppModel {
             }
             sender.input(AppMsg::SchemaLoaded(Box::new(erd_tables)));
         });
+    }
+
+    fn refresh_builder(&mut self, sender: &ComponentSender<Self>) {
+        let live: Vec<ConnectionProfile> = self
+            .connections
+            .iter()
+            .filter(|profile| self.connected.contains(&profile.id))
+            .cloned()
+            .collect();
+        self.builder_ids = live.iter().map(|profile| profile.id).collect();
+        let names: Vec<&str> = live.iter().map(|profile| profile.name.as_str()).collect();
+        self.builder_conn_dropdown
+            .set_model(Some(&gtk::StringList::new(&names)));
+        if live.is_empty() {
+            self.builder_connection = None;
+            self.builder_stack.set_visible_child_name("empty");
+            return;
+        }
+        self.builder_stack.set_visible_child_name("form");
+        let current = self
+            .builder_connection
+            .filter(|id| self.builder_ids.contains(id))
+            .unwrap_or(self.builder_ids[0]);
+        self.builder_connection = Some(current);
+        self.builder_database = self.designer_database_for(current);
+        let index = self
+            .builder_ids
+            .iter()
+            .position(|id| *id == current)
+            .unwrap_or(0);
+        self.builder_conn_dropdown.set_selected(index as u32);
+        self.load_builder_tables(sender);
+    }
+
+    fn load_builder_tables(&mut self, sender: &ComponentSender<Self>) {
+        let Some(id) = self.builder_connection else {
+            return;
+        };
+        let Some(service) = &self.service else {
+            return;
+        };
+        let service = Arc::clone(service);
+        let sender = sender.clone();
+        let database = self.builder_database.clone();
+        self.handle.spawn(async move {
+            match service.list_tables(id, &database).await {
+                Ok(tables) => sender.input(AppMsg::BuilderTables(Box::new(tables))),
+                Err(error) => sender.input(AppMsg::BuilderFailed(format!(
+                    "Could not list tables: {}",
+                    error.user_message()
+                ))),
+            }
+        });
+    }
+
+    fn rebuild_builder_columns(&mut self, sender: &ComponentSender<Self>) {
+        while let Some(child) = self.builder_columns_box.first_child() {
+            self.builder_columns_box.remove(&child);
+        }
+        let flow = gtk::FlowBox::new();
+        flow.set_selection_mode(gtk::SelectionMode::None);
+        flow.set_column_spacing(10);
+        flow.set_row_spacing(6);
+        for column in &self.builder_columns {
+            let check = gtk::CheckButton::with_label(column);
+            check.set_active(self.builder_selected.contains(column));
+            let name = column.clone();
+            let sender = sender.clone();
+            check.connect_toggled(move |button| {
+                sender.input(AppMsg::BuilderToggleColumn(
+                    name.clone(),
+                    button.is_active(),
+                ));
+            });
+            flow.insert(&check, -1);
+        }
+        self.builder_columns_box.append(&flow);
+    }
+
+    fn populate_builder_filters(&mut self, sender: &ComponentSender<Self>) {
+        while let Some(child) = self.builder_filters_box.first_child() {
+            self.builder_filters_box.remove(&child);
+        }
+        if self.builder_filters.is_empty() {
+            self.builder_filters_box
+                .append(&plain_row("No filters yet", "view-filter-symbolic"));
+            return;
+        }
+        let filters = self.builder_filters.clone();
+        for (index, filter) in filters.iter().enumerate() {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row.set_margin_start(6);
+            row.set_margin_end(6);
+            row.set_margin_top(2);
+            row.set_margin_bottom(2);
+            let label = gtk::Label::new(Some(&format!(
+                "{} {} {}",
+                filter.column,
+                filter.operator.label(),
+                filter.value
+            )));
+            label.set_xalign(0.0);
+            label.set_hexpand(true);
+            row.append(&label);
+            let remove = gtk::Button::from_icon_name("list-remove-symbolic");
+            remove.add_css_class("flat");
+            remove.set_tooltip_text(Some("Remove filter"));
+            {
+                let sender = sender.clone();
+                remove.connect_clicked(move |_| sender.input(AppMsg::BuilderRemoveFilter(index)));
+            }
+            row.append(&remove);
+            self.builder_filters_box.append(&row);
+        }
+    }
+
+    fn preview_builder(&self) -> Result<String, UniDbError> {
+        let Some(connection_id) = self.builder_connection else {
+            return Err(UniDbError::new(
+                "builder_invalid",
+                ErrorCategory::Syntax,
+                "Choose a live connection first",
+            ));
+        };
+        let Some(engine) = self
+            .connections
+            .iter()
+            .find(|profile| profile.id == connection_id)
+            .map(|profile| profile.engine)
+        else {
+            return Err(UniDbError::new(
+                "builder_invalid",
+                ErrorCategory::Syntax,
+                "The connection profile could not be loaded",
+            ));
+        };
+        let Some(dialect) = SqlDialect::for_engine(engine) else {
+            return Err(UniDbError::new(
+                "builder_unsupported",
+                ErrorCategory::Unsupported,
+                "The query builder supports SQL engines only",
+            ));
+        };
+        let table = self.builder_table.clone().unwrap_or_default();
+        let order = self
+            .builder_columns
+            .get(self.builder_order_dropdown.selected() as usize)
+            .cloned();
+        let builder = QueryBuilder {
+            table,
+            columns: self.builder_selected.clone(),
+            filters: self.builder_filters.clone(),
+            order_by: order,
+            ascending: self.builder_order_asc.is_active(),
+            limit: Some(self.builder_limit_spin.value_as_int() as u32),
+        };
+        build_query(&builder, dialect)
     }
 
     fn load_security(&mut self, sender: &ComponentSender<Self>) {
@@ -3813,6 +4173,172 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         .child(&security_page)
         .build();
 
+    // Builder page.
+    let builder_status = gtk::Label::builder()
+        .label("Choose a live connection.")
+        .xalign(0.0)
+        .wrap(true)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    builder_status.add_css_class("unidb-muted");
+    let builder_conn_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    builder_conn_dropdown.set_hexpand(true);
+    {
+        let sender = sender.clone();
+        builder_conn_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::BuilderConnectionSelected(dropdown.selected()));
+        });
+    }
+    let builder_table_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    {
+        let sender = sender.clone();
+        builder_table_dropdown.connect_selected_notify(move |dropdown| {
+            sender.input(AppMsg::BuilderTableSelected(dropdown.selected()));
+        });
+    }
+    let builder_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    builder_toolbar.set_margin_all(10);
+    builder_toolbar.append(&builder_conn_dropdown);
+    builder_toolbar.append(&builder_table_dropdown);
+
+    let builder_columns_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    builder_columns_box.set_margin_all(6);
+    let builder_columns_scroll = gtk::ScrolledWindow::builder()
+        .height_request(120)
+        .vexpand(false)
+        .child(&builder_columns_box)
+        .build();
+    let builder_columns_group = adw::PreferencesGroup::builder().title("Columns").build();
+    builder_columns_group.add(&builder_columns_scroll);
+
+    let builder_filter_column =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    builder_filter_column.set_hexpand(true);
+    let op_labels = [
+        "=",
+        "<>",
+        ">",
+        ">=",
+        "<",
+        "<=",
+        "LIKE",
+        "IS NULL",
+        "IS NOT NULL",
+    ];
+    let builder_filter_op = gtk::DropDown::new(
+        Some(gtk::StringList::new(&op_labels)),
+        None::<gtk::Expression>,
+    );
+    let builder_filter_value = gtk::Entry::builder()
+        .placeholder_text("value")
+        .width_chars(12)
+        .build();
+    let builder_add_filter = gtk::Button::with_label("Add filter");
+    {
+        let sender = sender.clone();
+        builder_add_filter.connect_clicked(move |_| sender.input(AppMsg::BuilderAddFilter));
+    }
+    let builder_filter_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    builder_filter_controls.set_margin_all(6);
+    builder_filter_controls.append(&builder_filter_column);
+    builder_filter_controls.append(&builder_filter_op);
+    builder_filter_controls.append(&builder_filter_value);
+    builder_filter_controls.append(&builder_add_filter);
+    let builder_filters_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let builder_filters_group = adw::PreferencesGroup::builder().title("Filters").build();
+    builder_filters_group.add(&builder_filter_controls);
+    builder_filters_group.add(&builder_filters_box);
+
+    let builder_order_dropdown =
+        gtk::DropDown::new(Some(gtk::StringList::new(&[])), None::<gtk::Expression>);
+    builder_order_dropdown.set_hexpand(true);
+    let builder_order_asc = gtk::Switch::new();
+    builder_order_asc.set_active(true);
+    let builder_limit_spin = gtk::SpinButton::with_range(1.0, 10000.0, 10.0);
+    builder_limit_spin.set_value(100.0);
+    builder_limit_spin.set_numeric(true);
+    let builder_order_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    builder_order_box.set_margin_all(6);
+    let order_label = gtk::Label::new(Some("Order by"));
+    builder_order_box.append(&order_label);
+    builder_order_box.append(&builder_order_dropdown);
+    let asc_label = gtk::Label::new(Some("Ascending"));
+    builder_order_box.append(&asc_label);
+    builder_order_box.append(&builder_order_asc);
+    let limit_label = gtk::Label::new(Some("Limit"));
+    builder_order_box.append(&limit_label);
+    builder_order_box.append(&builder_limit_spin);
+    let builder_order_group = adw::PreferencesGroup::builder()
+        .title("Order and limit")
+        .build();
+    builder_order_group.add(&builder_order_box);
+
+    let builder_preview_button = gtk::Button::with_label("Preview SQL");
+    {
+        let sender = sender.clone();
+        builder_preview_button.connect_clicked(move |_| sender.input(AppMsg::BuilderPreview));
+    }
+    let builder_editor_button = gtk::Button::with_label("Open in editor");
+    builder_editor_button.add_css_class("suggested-action");
+    {
+        let sender = sender.clone();
+        builder_editor_button.connect_clicked(move |_| sender.input(AppMsg::BuilderOpenInEditor));
+    }
+    let builder_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    builder_actions.set_margin_all(6);
+    builder_actions.set_halign(gtk::Align::End);
+    builder_actions.append(&builder_preview_button);
+    builder_actions.append(&builder_editor_button);
+    let builder_actions_group = adw::PreferencesGroup::builder().build();
+    builder_actions_group.add(&builder_actions);
+
+    let builder_preview_buffer = sourceview5::Buffer::new(None::<&gtk::TextTagTable>);
+    if let Some(language) = sourceview5::LanguageManager::default().language("sql") {
+        builder_preview_buffer.set_language(Some(&language));
+    }
+    builder_preview_buffer.set_highlight_syntax(true);
+    if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme("Adwaita") {
+        builder_preview_buffer.set_style_scheme(Some(&scheme));
+    }
+    let builder_preview = sourceview5::View::with_buffer(&builder_preview_buffer);
+    builder_preview.set_monospace(true);
+    builder_preview.set_editable(false);
+    let builder_preview_scroll = gtk::ScrolledWindow::builder()
+        .height_request(140)
+        .child(&builder_preview)
+        .build();
+    let builder_preview_group = adw::PreferencesGroup::builder().title("Preview").build();
+    builder_preview_group.add(&builder_preview_scroll);
+
+    let builder_page_prefs = adw::PreferencesPage::new();
+    builder_page_prefs.add(&builder_columns_group);
+    builder_page_prefs.add(&builder_filters_group);
+    builder_page_prefs.add(&builder_order_group);
+    builder_page_prefs.add(&builder_actions_group);
+    builder_page_prefs.add(&builder_preview_group);
+    let builder_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&builder_page_prefs)
+        .build();
+    let builder_form = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    builder_form.append(&builder_toolbar);
+    builder_form.append(&builder_status);
+    builder_form.append(&builder_scroll);
+    let builder_empty = adw::StatusPage::builder()
+        .icon_name("document-edit-symbolic")
+        .title("No live connection")
+        .description("Connect to a SQL database, then build a query here.")
+        .build();
+    let builder_stack = gtk::Stack::new();
+    builder_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    builder_stack.add_named(&builder_empty, Some("empty"));
+    builder_stack.add_named(&builder_form, Some("form"));
+    builder_stack.set_visible_child_name("empty");
+
     // Schema page.
     let schema_status = gtk::Label::builder()
         .label("Choose a live connection.")
@@ -3884,6 +4410,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
     page_stack.add_named(&history_box, Some("history"));
     page_stack.add_named(&settings_scroll, Some("settings"));
     page_stack.add_named(&schema_stack, Some("schema"));
+    page_stack.add_named(&builder_stack, Some("builder"));
     page_stack.add_named(&security_scroll, Some("security"));
 
     let content_page = adw::NavigationPage::new(&page_stack, "Connections");
@@ -3899,6 +4426,7 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         ("document-open-recent-symbolic", "History"),
         ("emblem-system-symbolic", "Settings"),
         ("view-grid-symbolic", "Schema"),
+        ("document-edit-symbolic", "Builder"),
         ("security-high-symbolic", "Security"),
     ] {
         let row = gtk::ListBoxRow::new();
@@ -4038,6 +4566,19 @@ fn build_shell(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>
         schema_status,
         schema_canvas,
         schema_tables,
+        builder_stack,
+        builder_conn_dropdown,
+        builder_table_dropdown,
+        builder_columns_box,
+        builder_filters_box,
+        builder_filter_column,
+        builder_filter_op,
+        builder_filter_value,
+        builder_order_dropdown,
+        builder_order_asc,
+        builder_limit_spin,
+        builder_preview_buffer,
+        builder_status,
     }
 }
 
