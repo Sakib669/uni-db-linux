@@ -223,7 +223,7 @@ UniDB is a native Linux desktop database studio. This file tracks what is being 
   - [x] Fake data: type aware deterministic generator, skipped integer keys, transactional insert, audit, Transfer controls, and container screenshot
   - [ ] Migrations and git integration
   - [ ] Time travel and archive
-  - [ ] Masking of existing data and exports
+  - [x] Masking of exports: text and email masking, masked CSV and JSON entries in the editor Export menu, service path with audit, and headless tests
   - [ ] Multi database query and team bundles
 - [ ] Verify it: /check verify Workflow features
 - [ ] Test it: /test Workflow features
