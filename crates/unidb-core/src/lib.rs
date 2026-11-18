@@ -5,6 +5,7 @@ pub mod builder;
 pub mod engine;
 pub mod error;
 pub mod fake;
+pub mod mask;
 pub mod profile;
 pub mod schema;
 pub mod transfer;
@@ -15,6 +16,7 @@ pub use builder::{FilterOp, QueryBuilder, QueryFilter, build_query};
 pub use engine::{Capabilities, Engine};
 pub use error::{ErrorCategory, UniDbError};
 pub use fake::{FakeKind, generate_fake_rows, insertable_columns, kind_for};
+pub use mask::{EMAIL_MASK, TEXT_MASK, mask_rows, mask_value};
 pub use profile::{ConnectionProfile, ParsedConnectionUrl, SslMode};
 pub use schema::{
     ColumnDesign, ForeignKeyInfo, SqlDialect, TableColumnInfo, TableDesign, alter_table_sql,
