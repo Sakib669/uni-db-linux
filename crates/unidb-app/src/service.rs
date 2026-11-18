@@ -19,7 +19,7 @@ use uuid::Uuid;
 use unidb_core::{
     ConnectionProfile, Engine, ErrorCategory, ForeignKeyInfo, QueryResult, SqlDialect,
     TableColumnInfo, TransferFormat, UniDbError, coerce_value, generate_fake_rows,
-    insert_statements, insertable_columns, parse_import, rows_to_csv, rows_to_json,
+    insert_statements, insertable_columns, mask_rows, parse_import, rows_to_csv, rows_to_json,
 };
 use unidb_engine::{
     CassandraConnector, ConnectorRegistry, MongoConnector, MssqlConnector, MySqlConnector,
@@ -814,6 +814,46 @@ impl AppService {
         .await?;
         Ok(ExportReport {
             rows: result.rows.len(),
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Runs a statement and writes a masked CSV or JSON copy of its result.
+    pub async fn export_query_masked(
+        &self,
+        connection_id: Uuid,
+        sql: &str,
+        format: TransferFormat,
+        path: &Path,
+    ) -> Result<ExportReport, UniDbError> {
+        let result = self.execute(connection_id, sql).await?;
+        let rows = mask_rows(&result.rows);
+        let contents = match format {
+            TransferFormat::Csv => rows_to_csv(&result.columns, &rows)?,
+            TransferFormat::Json => rows_to_json(&result.columns, &rows)?,
+        };
+        tokio::fs::write(path, contents).await.map_err(|error| {
+            UniDbError::new(
+                "transfer_write_failed",
+                ErrorCategory::Network,
+                "The masked export could not be written",
+            )
+            .with_detail(error.to_string())
+        })?;
+        self.audit_transfer(
+            "export_finished",
+            Some(connection_id),
+            "success",
+            serde_json::json!({
+                "rows": rows.len(),
+                "format": format.label(),
+                "masked": true,
+                "path": path.display().to_string(),
+            }),
+        )
+        .await?;
+        Ok(ExportReport {
+            rows: rows.len(),
             path: path.to_path_buf(),
         })
     }

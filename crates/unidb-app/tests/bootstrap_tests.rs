@@ -504,3 +504,47 @@ async fn fake_data_is_deterministic_and_inserted() {
     service.close_connection(profile.id).await.expect("close");
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn masked_exports_hide_text_values() {
+    use unidb_core::TransferFormat;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let provider = MemoryKeyProvider::empty();
+    let service = bootstrap(dir.path(), &provider).await;
+    let profile = sqlite_profile(dir.path());
+    service.save_connection(&profile, None).await.expect("save");
+    service.open_connection(&profile).await.expect("open");
+    service
+        .apply_statements(
+            profile.id,
+            &[
+                "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, email TEXT)".to_string(),
+                "INSERT INTO people (id, name, email) VALUES (1, 'Ada', 'ada@example.com')"
+                    .to_string(),
+            ],
+        )
+        .await
+        .expect("schema");
+    let path = dir.path().join("masked.csv");
+    let report = service
+        .export_query_masked(
+            profile.id,
+            "SELECT id, name, email FROM people",
+            TransferFormat::Csv,
+            &path,
+        )
+        .await
+        .expect("masked export");
+    assert_eq!(report.rows, 1);
+    let contents = std::fs::read_to_string(&path).expect("read");
+    assert!(contents.contains("[masked]"), "{contents}");
+    assert!(contents.contains("masked@example.test"), "{contents}");
+    assert!(!contents.contains("Ada"), "{contents}");
+
+    let audit = service.recent_audit(20).await.expect("audit");
+    assert!(audit.iter().any(|entry| entry.action == "export_finished"));
+
+    service.close_connection(profile.id).await.expect("close");
+    service.shutdown().await;
+}
